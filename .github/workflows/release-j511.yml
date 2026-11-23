@@ -1,0 +1,46 @@
+name: Build and release J511 Friends
+
+on:
+  push:
+    tags:
+      - v0.3.0-preview-J511
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-2025
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Install Zig 0.15.2
+        run: |
+          $folder = 'zig-x86_64-windows-0.15.2'
+          $archive = Join-Path $env:RUNNER_TEMP "$folder.zip"
+          Invoke-WebRequest -Uri "https://ziglang.org/download/0.15.2/$folder.zip" -OutFile $archive
+          Expand-Archive -LiteralPath $archive -DestinationPath $env:RUNNER_TEMP
+          $zig = Join-Path $env:RUNNER_TEMP "$folder/zig.exe"
+          if ((& $zig version) -ne '0.15.2') { throw 'Expected Zig 0.15.2.' }
+          "ZIG_PATH=$zig" >> $env:GITHUB_ENV
+
+      - name: Build the friends installer
+        run: |
+          [string] $setup = & .\Build-FriendsSetup.ps1 -ZigPath $env:ZIG_PATH
+          $asset = Get-Item -LiteralPath $setup
+          "SETUP_EXE=$($asset.FullName)" >> $env:GITHUB_ENV
+
+      - name: Publish the prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $runUrl = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+          $notes = "Windows Steam 版 Repentance+ 1.9.7.19.J511 好友联机预览。[构建记录]($runUrl)"
+          gh release create $env:GITHUB_REF_NAME $env:SETUP_EXE --verify-tag --prerelease `
+            --title 'Better Multiplayer 0.3.0 Preview J511 Friends' --notes $notes

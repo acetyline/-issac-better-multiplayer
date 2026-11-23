@@ -1,0 +1,12 @@
+LIBRARY bm_steam
+EXPORTS
+    SteamAPI_GetHSteamUser
+    SteamAPI_RegisterCallback
+    SteamAPI_RegisterCallResult
+    SteamAPI_RunCallbacks
+    SteamAPI_Shutdown
+    SteamAPI_UnregisterCallback
+    SteamAPI_UnregisterCallResult
+    SteamInternal_ContextInit
+    SteamInternal_FindOrCreateUserInterface
+    SteamInternal_SteamAPI_Init
