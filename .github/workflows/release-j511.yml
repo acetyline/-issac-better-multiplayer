@@ -8,6 +8,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: j511-friends-release
+  cancel-in-progress: false
+
 jobs:
   release:
     runs-on: windows-2025
@@ -40,7 +44,21 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          $tag = $env:GITHUB_REF_NAME
+          $tagCommit = gh api "repos/$env:GITHUB_REPOSITORY/commits/$tag" --jq '.sha'
+          if ($LASTEXITCODE -ne 0 -or $tagCommit -ne $env:GITHUB_SHA) {
+            throw 'The release tag must point to the commit built by this run.'
+          }
+
           $runUrl = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
-          $notes = "Windows Steam 版 Repentance+ 1.9.7.19.J511 好友联机预览。[构建记录]($runUrl)"
-          gh release create $env:GITHUB_REF_NAME $env:SETUP_EXE --verify-tag --prerelease `
-            --title 'Better Multiplayer 0.3.0 Preview J511 Friends' --notes $notes
+          $notes = "Windows Steam 版 Repentance+ 1.9.7.19.J511 好友联机预览。存档路径记录读成乱码时，从 Windows 文档目录读取 options.ini。[构建记录]($runUrl)"
+
+          gh release view $tag --json databaseId *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag $env:SETUP_EXE --clobber
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            gh release edit $tag --notes $notes
+          } else {
+            gh release create $tag $env:SETUP_EXE --verify-tag --prerelease `
+              --title 'Better Multiplayer 0.3.0 Preview J511 Friends' --notes $notes
+          }

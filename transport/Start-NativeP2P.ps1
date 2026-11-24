@@ -150,11 +150,19 @@ namespace BetterMultiplayer
 function Get-Options {
     $savePath = Join-Path $game 'savedatapath.txt'
     if (Test-Path -LiteralPath $savePath -PathType Leaf) {
-        $line = [IO.File]::ReadLines($savePath) | Where-Object { $_.StartsWith('Save Data Path:') } | Select-Object -First 1
-        if ($line) {
-            $path = Join-Path ($line.Substring('Save Data Path:'.Length).Trim()) 'options.ini'
-            if (Test-Path -LiteralPath $path -PathType Leaf) { return [IO.Path]::GetFullPath($path) }
+        $line = [IO.File]::ReadAllLines($savePath) | Where-Object { $_.StartsWith('Save Data Path:') } | Select-Object -First 1
+        $folder = if ($line) { $line.Substring('Save Data Path:'.Length).Trim() }
+        if ($folder) {
+            $path = Join-Path $folder 'options.ini' -ErrorAction SilentlyContinue
+            if ($path -and (Test-Path -LiteralPath $path -PathType Leaf -ErrorAction SilentlyContinue)) {
+                return [IO.Path]::GetFullPath($path)
+            }
         }
+    }
+    $documents = [Environment]::GetFolderPath([Environment+SpecialFolder]::MyDocuments)
+    if ($documents) {
+        $fallback = Join-Path $documents 'My Games/Binding of Isaac Repentance+/options.ini'
+        if (Test-Path -LiteralPath $fallback -PathType Leaf) { return $fallback }
     }
     throw '请先通过 Steam 运行一次 Repentance+。'
 }
