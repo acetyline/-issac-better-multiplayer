@@ -232,7 +232,7 @@ internal sealed class SetupWindow : Form
             string desktop = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
             current = await Task.Run(() => FriendsInstallation.Install(selected, FriendsInstallation.Home, desktop));
             directory.Text = current.GameDirectory;
-            SetStatus("安装完成。可从 Steam 或桌面快捷方式启动。", false);
+            SetStatus("安装完成。直接从 Steam 启动游戏即可。", false);
         }
         catch (UnauthorizedAccessException error)
         {
@@ -458,7 +458,6 @@ internal sealed class FriendsInstallation
                     string executable = Assembly.GetExecutingAssembly().Location;
                     if (!string.Equals(executable, installation.Executable, StringComparison.OrdinalIgnoreCase))
                         Publish(installation.Executable, path => File.Copy(executable, path));
-                    try { CreateShortcut(desktop, installation.Executable); } catch { }
                     bool createdChineseCheckMarker = false;
                     try
                     {
@@ -772,17 +771,6 @@ internal sealed class FriendsInstallation
             if (File.Exists(temporary))
                 File.Delete(temporary);
         }
-    }
-
-    private static void CreateShortcut(string desktop, string executable)
-    {
-        dynamic shell = Activator.CreateInstance(Type.GetTypeFromProgID("WScript.Shell"));
-        dynamic shortcut = shell.CreateShortcut(Path.Combine(desktop, ShortcutName));
-        shortcut.TargetPath = executable;
-        shortcut.Arguments = "/play";
-        shortcut.WorkingDirectory = Path.GetDirectoryName(executable);
-        shortcut.Description = "启动 Better Multiplayer 好友联机";
-        shortcut.Save();
     }
 }
 
