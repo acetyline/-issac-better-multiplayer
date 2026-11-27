@@ -234,6 +234,24 @@ internal sealed class SetupWindow : Form
             directory.Text = current.GameDirectory;
             SetStatus("安装完成。可从 Steam 或桌面快捷方式启动。", false);
         }
+        catch (UnauthorizedAccessException error)
+        {
+            SetStatus("权限不足，需要管理员权限或解除拦截。", true);
+            string prompt = "对路径的访问被拒绝，通常是因为：\n" +
+                "1. 游戏安装在 C:\\Program Files 等受保护目录，需要管理员权限；\n" +
+                "2. 直接在压缩包内双击运行，未先将 installer.zip 解压出来；\n" +
+                "3. Windows 安全中心或杀毒软件拦截了文件写入。\n\n" +
+                "是否立即尝试以管理员身份重新打开安装程序？\n\n原始错误：" + error.Message;
+            if (MessageBox.Show(this, prompt, Program.Title, MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes)
+            {
+                try
+                {
+                    Process.Start(new ProcessStartInfo(Application.ExecutablePath) { UseShellExecute = true, Verb = "runas" });
+                    Close();
+                }
+                catch { }
+            }
+        }
         catch (Exception error)
         {
             SetStatus("安装提示，请查看弹窗。", true);
@@ -440,7 +458,7 @@ internal sealed class FriendsInstallation
                     string executable = Assembly.GetExecutingAssembly().Location;
                     if (!string.Equals(executable, installation.Executable, StringComparison.OrdinalIgnoreCase))
                         Publish(installation.Executable, path => File.Copy(executable, path));
-                    CreateShortcut(desktop, installation.Executable);
+                    try { CreateShortcut(desktop, installation.Executable); } catch { }
                     bool createdChineseCheckMarker = false;
                     try
                     {
@@ -723,12 +741,27 @@ internal sealed class FriendsInstallation
         });
     }
 
+    private static void ClearReadOnly(string path)
+    {
+        if (string.IsNullOrEmpty(path) || !File.Exists(path))
+            return;
+        try
+        {
+            FileAttributes attrs = File.GetAttributes(path);
+            if ((attrs & FileAttributes.ReadOnly) != 0)
+                File.SetAttributes(path, attrs & ~FileAttributes.ReadOnly);
+        }
+        catch { }
+    }
+
     internal static void Publish(string destination, Action<string> write, string backup = null, bool replaceExisting = true)
     {
         string temporary = destination + "." + Guid.NewGuid().ToString("N");
         try
         {
             write(temporary);
+            ClearReadOnly(destination);
+            ClearReadOnly(backup);
             if (replaceExisting && File.Exists(destination))
                 File.Replace(temporary, destination, backup);
             else
@@ -766,26 +799,37 @@ internal static class SteamGame
 
     internal static string Find()
     {
-        using (var steam = Registry.CurrentUser.OpenSubKey(@"Software\Valve\Steam"))
+        try
         {
-            string root = steam == null ? null : steam.GetValue("SteamPath") as string;
-            if (string.IsNullOrWhiteSpace(root))
-                root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Steam");
-
-            string candidate = FindInLibrary(root);
-            if (candidate != null)
-                return candidate;
-
-            string libraryList = Path.Combine(root, "steamapps", "libraryfolders.vdf");
-            if (File.Exists(libraryList))
+            using (var steam = Registry.CurrentUser.OpenSubKey(@"Software\Valve\Steam"))
             {
-                foreach (Match entry in LibraryPath.Matches(File.ReadAllText(libraryList)))
+                string root = steam == null ? null : steam.GetValue("SteamPath") as string;
+                if (string.IsNullOrWhiteSpace(root))
+                    root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Steam");
+
+                string candidate = FindInLibrary(root);
+                if (candidate != null)
+                    return candidate;
+
+                string libraryList = Path.Combine(root, "steamapps", "libraryfolders.vdf");
+                if (File.Exists(libraryList))
                 {
-                    candidate = FindInLibrary(entry.Groups[1].Value.Replace(@"\\", @"\"));
-                    if (candidate != null)
-                        return candidate;
+                    foreach (Match entry in LibraryPath.Matches(File.ReadAllText(libraryList)))
+                    {
+                        try
+                        {
+                            candidate = FindInLibrary(entry.Groups[1].Value.Replace(@"\\", @"\"));
+                            if (candidate != null)
+                                return candidate;
+                        }
+                        catch { }
+                    }
                 }
+                return "";
             }
+        }
+        catch
+        {
             return "";
         }
     }
