@@ -12,11 +12,14 @@ using Microsoft.Win32;
 
 [assembly: AssemblyTitle("Better Multiplayer 好友联机安装")]
 [assembly: AssemblyProduct("Better Multiplayer")]
-[assembly: AssemblyVersion("0.3.0.0")]
+[assembly: AssemblyVersion(Program.Version + ".0")]
+[assembly: AssemblyFileVersion(Program.Version + ".0")]
+[assembly: AssemblyInformationalVersion(Program.Version)]
 
 internal static class Program
 {
     internal const string Title = "Better Multiplayer";
+    internal const string Version = "0.4.0";
 
     [STAThread]
     private static void Main(string[] arguments)
@@ -31,7 +34,7 @@ internal static class Program
             try
             {
                 using (var process = Process.GetCurrentProcess())
-                    FriendsInstallation.ReadSteam(location, FriendsInstallation.Home).Run("Launch", null, process.Id, arguments);
+                    FriendsInstallation.ReadSteam(location, FriendsInstallation.Home).Launch(process.Id, arguments);
             }
             catch (Exception error)
             {
@@ -77,7 +80,7 @@ internal static class Program
         {
             try
             {
-                FriendsInstallation.Read(FriendsInstallation.Home).Run("Launch");
+                FriendsInstallation.Read(FriendsInstallation.Home).Launch();
             }
             catch (Exception error)
             {
@@ -103,7 +106,7 @@ internal sealed class SetupWindow : Form
 
     internal SetupWindow()
     {
-        Text = Program.Title;
+        Text = Program.Title + " " + Program.Version;
         Font = new Font("Segoe UI", 10);
         AutoScaleMode = AutoScaleMode.Dpi;
         StartPosition = FormStartPosition.CenterScreen;
@@ -136,7 +139,7 @@ internal sealed class SetupWindow : Form
         };
         var subtitle = new Label
         {
-            Text = "《以撒的结合：忏悔+》J511 好友联机", AutoSize = true, Margin = new Padding(0),
+            Text = "《以撒的结合：忏悔+》J511 / J514 好友联机", AutoSize = true, Margin = new Padding(0),
             ForeColor = Color.FromArgb(71, 84, 103)
         };
         var directoryLabel = new Label { Text = "游戏目录", AutoSize = true, Margin = new Padding(0) };
@@ -303,11 +306,12 @@ internal sealed class FriendsInstallation
     internal const string SteamExecutableName = "isaac-ng.exe";
     internal const string UninstallerName = "BetterMultiplayer-Uninstall.exe";
     private const string OriginalName = "isaac-ng.bettermultiplayer-original.exe";
+    private const string LegacyAssemblyName = "BetterMultiplayer-0.3.0-preview-J511-Friends-Mods-Setup";
     private const string SteamSettingsName = "BetterMultiplayer-installation.txt";
+    private const string ChineseCheckMarkerName = "cn_check_bypass.it";
     private const string ShortcutName = "Better Multiplayer 好友联机.lnk";
-    private const string Launcher = "Start-NativeP2P.ps1";
-    private const string Library = "bm_steam.dll";
-    private const string ModSync = "bm_modsync.exe";
+    private const string Library = FriendsLauncher.Bridge;
+    private const string ModSync = FriendsLauncher.ModSync;
     private const string SetupMutex = @"Local\BetterMultiplayer-Friends-Setup";
     private const string GameMutex = @"Local\BetterMultiplayer-Native-P2P-J511";
     private readonly string home, profile;
@@ -326,6 +330,8 @@ internal sealed class FriendsInstallation
     private string SteamExecutable { get { return Path.Combine(GameDirectory, SteamExecutableName); } }
     private string OriginalExecutable { get { return Path.Combine(GameDirectory, OriginalName); } }
     private string Uninstaller { get { return Path.Combine(GameDirectory, UninstallerName); } }
+    private string ChineseCheckMarker { get { return Path.Combine(GameDirectory, ChineseCheckMarkerName); } }
+    private string ChineseCheckMarkerReceipt { get { return Path.Combine(TransportDirectory, ChineseCheckMarkerName); } }
     private static string Settings(string home) { return Path.Combine(home, "installation.txt"); }
     private static string SteamSettings(string game) { return Path.Combine(game, SteamSettingsName); }
 
@@ -349,7 +355,11 @@ internal sealed class FriendsInstallation
     {
         if (!File.Exists(path))
             return false;
-        try { return AssemblyName.GetAssemblyName(path).Name == Assembly.GetExecutingAssembly().GetName().Name; }
+        try
+        {
+            string name = AssemblyName.GetAssemblyName(path).Name;
+            return name == Assembly.GetExecutingAssembly().GetName().Name || name == LegacyAssemblyName;
+        }
         catch (BadImageFormatException) { return false; }
     }
 
@@ -377,8 +387,8 @@ internal sealed class FriendsInstallation
 
         var installation = new FriendsInstallation(home, profile.ToString("N"), lines[1]);
         return File.Exists(installation.Executable) &&
-            File.Exists(Path.Combine(installation.TransportDirectory, Launcher)) &&
-            File.Exists(Path.Combine(installation.TransportDirectory, Library)) ? installation : null;
+            File.Exists(Path.Combine(installation.TransportDirectory, Library)) &&
+            File.Exists(Path.Combine(installation.TransportDirectory, ModSync)) ? installation : null;
     }
 
     internal static FriendsInstallation Read(string home)
@@ -422,17 +432,19 @@ internal sealed class FriendsInstallation
                         throw new IOException("请检查游戏目录中的 Better Multiplayer 安装记录和原版程序备份。");
 
                     Directory.CreateDirectory(installation.TransportDirectory);
-                    WriteResource(Launcher, installation.TransportDirectory);
                     WriteResource(Library, installation.TransportDirectory);
                     WriteResource(ModSync, installation.TransportDirectory);
-                    installation.Run("Prepare", replacingEntry ? installation.OriginalExecutable : installation.SteamExecutable);
+                    string source = replacingEntry ? installation.OriginalExecutable : installation.SteamExecutable;
+                    new FriendsLauncher(game, source, installation.NativeRoot, installation.TransportDirectory).Prepare(true);
 
                     string executable = Assembly.GetExecutingAssembly().Location;
                     if (!string.Equals(executable, installation.Executable, StringComparison.OrdinalIgnoreCase))
                         Publish(installation.Executable, path => File.Copy(executable, path));
                     CreateShortcut(desktop, installation.Executable);
+                    bool createdChineseCheckMarker = false;
                     try
                     {
+                        createdChineseCheckMarker = installation.CreateChineseCheckMarker();
                         Publish(SteamSettings(game), path => File.WriteAllText(path, profile));
                         Publish(installation.Uninstaller, path => File.Copy(executable, path));
                         Publish(installation.SteamExecutable, path => File.Copy(executable, path),
@@ -440,6 +452,8 @@ internal sealed class FriendsInstallation
                     }
                     catch
                     {
+                        if (createdChineseCheckMarker)
+                            installation.RemoveChineseCheckMarker();
                         if (ownedProfile == null && !IsBetterMultiplayerExe(installation.SteamExecutable))
                         {
                             File.Delete(installation.Uninstaller);
@@ -504,15 +518,19 @@ internal sealed class FriendsInstallation
         using (process) process.WaitForExit();
     }
 
-    private static void EnsureGameClosed()
+    private static void EnsureGameClosed(int ignoreProcess = 0)
     {
-        foreach (string name in new[] { "isaac-ng", "isaac-ng.bettermultiplayer-p2p-mods", "isaac-ng.bettermultiplayer-p2p",
+        foreach (string name in new[] { "isaac-ng", FriendsLauncher.ProcessName, "isaac-ng.bettermultiplayer-p2p",
             "isaac-ng.bettermultiplayer-1.9.7.19" })
         {
-            var games = Process.GetProcessesByName(name);
-            foreach (var running in games) running.Dispose();
-            if (games.Length != 0)
-                throw new InvalidOperationException("请退出以撒，再安装或卸载 Better Multiplayer。");
+            bool gameOpen = false;
+            foreach (var running in Process.GetProcessesByName(name))
+            {
+                using (running)
+                    gameOpen |= running.Id != ignoreProcess;
+            }
+            if (gameOpen)
+                throw new InvalidOperationException("请先退出已打开的以撒游戏。");
         }
     }
 
@@ -549,6 +567,7 @@ internal sealed class FriendsInstallation
                             throw new FileNotFoundException("请检查游戏目录中的原版程序备份。");
                         if (IsBetterMultiplayerExe(installation.Uninstaller))
                             File.Delete(installation.Uninstaller);
+                        installation.RemoveChineseCheckMarker();
                         File.Delete(SteamSettings(selected));
                     }
                     else if (current != null && selected != null && current.Matches(selected))
@@ -620,51 +639,29 @@ internal sealed class FriendsInstallation
         get { return Path.Combine(Environment.SystemDirectory, "WindowsPowerShell", "v1.0", "powershell.exe"); }
     }
 
-    internal void Run(string action, string original = null, int steamProcess = 0, string[] arguments = null)
+    internal void Launch(int steamProcess = 0, string[] arguments = null)
     {
-        string script = Path.Combine(TransportDirectory, Launcher);
-        if (original == null && IsBetterMultiplayerExe(SteamExecutable))
-            original = OriginalExecutable;
-        string command = "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File " +
-            Quote(script) + " -Action " + action + " -FriendsOnly -GameDirectory " + Quote(GameDirectory) +
-            " -InstallRoot " + Quote(NativeRoot);
-        if (original != null)
-            command += " -OriginalExecutable " + Quote(original);
-        if (steamProcess != 0)
+        using (var mutex = new Mutex(false, GameMutex))
         {
-            command += " -SteamEntryProcessId " + steamProcess;
-            if (arguments != null && arguments.Length != 0)
+            Acquire(mutex, "Better Multiplayer 已经在运行。");
+            try
             {
-                string gameArguments = string.Join(" ", Array.ConvertAll(arguments, Quote));
-                command += " -EncodedGameArguments " + Convert.ToBase64String(Encoding.Unicode.GetBytes(gameArguments));
-            }
-        }
-        var start = new ProcessStartInfo(PowerShell, command)
-        {
-            UseShellExecute = false, CreateNoWindow = true,
-            RedirectStandardOutput = true, RedirectStandardError = true,
-            StandardOutputEncoding = Encoding.UTF8, StandardErrorEncoding = Encoding.UTF8
-        };
+                EnsureGameClosed(steamProcess);
+                var clients = Process.GetProcessesByName("steam");
+                foreach (var client in clients) client.Dispose();
+                if (clients.Length == 0)
+                    throw new InvalidOperationException("请先登录 Steam。");
 
-        using (var process = Process.Start(start))
-        {
-            Task<string> output = process.StandardOutput.ReadToEndAsync();
-            Task<string> errors = process.StandardError.ReadToEndAsync();
-            process.WaitForExit();
-            if (process.ExitCode != 0)
-            {
-                string detail = string.IsNullOrWhiteSpace(errors.Result) ? output.Result.Trim() : errors.Result.Trim();
-                string firstLine = detail.Split('\r', '\n')[0];
-                string prefix = script + " : ";
-                if (firstLine.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-                    firstLine = firstLine.Substring(prefix.Length);
-                throw new InvalidOperationException(string.IsNullOrWhiteSpace(firstLine) ?
-                    "请核对游戏目录，关闭已打开的游戏后重试。" : firstLine);
+                string source = IsBetterMultiplayerExe(SteamExecutable) ? OriginalExecutable : SteamExecutable;
+                var launcher = new FriendsLauncher(GameDirectory, source, NativeRoot, TransportDirectory);
+                launcher.Prepare(false);
+                launcher.Launch(arguments);
             }
+            finally { mutex.ReleaseMutex(); }
         }
     }
 
-    private static string Quote(string value)
+    internal static string Quote(string value)
     {
         var quoted = new StringBuilder("\"");
         int slashes = 0;
@@ -681,6 +678,41 @@ internal sealed class FriendsInstallation
         return quoted.Append('\\', slashes * 2).Append('"').ToString();
     }
 
+    private bool CreateChineseCheckMarker()
+    {
+        if (File.Exists(ChineseCheckMarker))
+            return false;
+
+        File.WriteAllText(ChineseCheckMarkerReceipt, Program.Title);
+        bool created = false;
+        try
+        {
+            Publish(ChineseCheckMarker, path => File.WriteAllText(path, Program.Title), replaceExisting: false);
+            created = true;
+            return true;
+        }
+        catch (IOException)
+        {
+            if (File.Exists(ChineseCheckMarker))
+                return false;
+            throw;
+        }
+        finally
+        {
+            if (!created)
+                File.Delete(ChineseCheckMarkerReceipt);
+        }
+    }
+
+    private void RemoveChineseCheckMarker()
+    {
+        if (!File.Exists(ChineseCheckMarkerReceipt))
+            return;
+        if (File.Exists(ChineseCheckMarker) && File.ReadAllText(ChineseCheckMarker) == Program.Title)
+            File.Delete(ChineseCheckMarker);
+        File.Delete(ChineseCheckMarkerReceipt);
+    }
+
     private static void WriteResource(string name, string directory)
     {
         Publish(Path.Combine(directory, name), path =>
@@ -691,13 +723,13 @@ internal sealed class FriendsInstallation
         });
     }
 
-    private static void Publish(string destination, Action<string> write, string backup = null)
+    internal static void Publish(string destination, Action<string> write, string backup = null, bool replaceExisting = true)
     {
         string temporary = destination + "." + Guid.NewGuid().ToString("N");
         try
         {
             write(temporary);
-            if (File.Exists(destination))
+            if (replaceExisting && File.Exists(destination))
                 File.Replace(temporary, destination, backup);
             else
                 File.Move(temporary, destination);

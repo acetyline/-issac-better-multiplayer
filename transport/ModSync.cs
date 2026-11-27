@@ -20,7 +20,7 @@ namespace BetterMultiplayer
 
     public sealed class ModEntry
     {
-        public string Id, Folder, Version;
+        public string Id, Folder, Version, Name;
         public SortedDictionary<string, string> Settings = new SortedDictionary<string, string>(StringComparer.Ordinal);
     }
 
@@ -33,9 +33,9 @@ namespace BetterMultiplayer
         private static readonly string[] ConfigFiles = { "config.json", "settings.json", "options.json" };
         private static readonly string[] Slots = { "save1.dat", "save2.dat", "save3.dat" };
         private static readonly UTF8Encoding Utf8 = new UTF8Encoding(false, true);
-        private static readonly Encoding OptionsEncoding = Encoding.GetEncoding(28591);
-        private static readonly Regex EnabledSetting = new Regex(@"(?im)^((?:\uFEFF|\u00EF\u00BB\u00BF)?[ \t]*EnableMods[ \t]*=[ \t]*)([01])(?=[ \t]*\r?$)");
-        private readonly string mods, data, options, session;
+        private static readonly Regex GoodTripName = new Regex(@"good\s*trip", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        private static readonly Regex DisplayWhitespace = new Regex(@"[\p{Cc}\p{Cf}\s]+");
+        private readonly string mods, data, session;
         private readonly JavaScriptSerializer json = new JavaScriptSerializer { MaxJsonLength = MaxSettings, RecursionLimit = 32 };
 
         private sealed class Installed
@@ -44,11 +44,10 @@ namespace BetterMultiplayer
             internal string Path;
         }
 
-        private ModSync(string game, string options, string session)
+        private ModSync(string game, string session)
         {
             mods = Path.Combine(game, "mods");
             data = Path.Combine(game, "data");
-            this.options = options;
             this.session = session;
         }
 
@@ -59,11 +58,13 @@ namespace BetterMultiplayer
             {
                 if (args.Length != 4)
                     throw new IOException("请从 Better Multiplayer 启动 Mod 同步。");
-                var sync = new ModSync(args[1], args[2], args[3]);
-                if (args[0] == "scan")
-                    sync.Export();
+                var sync = new ModSync(args[1], args[2]);
+                if (args[0] == "prepare")
+                    sync.Prepare();
+                else if (args[0] == "scan" && (args[3] == "0" || args[3] == "1"))
+                    sync.Export(args[3] == "1");
                 else if (args[0] == "apply")
-                    sync.Apply();
+                    Console.WriteLine(sync.Apply() ? "1" : "0");
                 else
                     throw new IOException("请核对 Mod 同步操作。");
                 return 0;
@@ -75,13 +76,20 @@ namespace BetterMultiplayer
             }
         }
 
-        private List<Installed> InstalledMods()
+        private List<Installed> InstalledMods(List<string> blocked = null)
         {
             RequirePlain(mods);
-            if (!Directory.Exists(mods))
-                return new List<Installed>();
-            return Directory.EnumerateDirectories(mods).Where(Plain)
-                .Select(path => ReadMod(path, null)).Where(item => item != null).ToList();
+            var installed = new List<Installed>();
+            if (Directory.Exists(mods))
+            {
+                foreach (string path in Directory.EnumerateDirectories(mods).Where(Plain))
+                {
+                    var mod = ReadMod(path, null, blocked);
+                    if (mod != null)
+                        installed.Add(mod);
+                }
+            }
+            return installed;
         }
 
         private static XElement ReadMetadata(string file)
@@ -91,8 +99,14 @@ namespace BetterMultiplayer
                 return XElement.Load(reader);
         }
 
-        private static Installed ReadMod(string path, string workshop)
+        private static Installed ReadMod(string path, string workshop, List<string> blocked = null)
         {
+            string actualFolder = Path.GetFileName(path);
+            if (GoodTripName.IsMatch(actualFolder))
+            {
+                if (blocked != null) blocked.Add(actualFolder);
+                return null;
+            }
             string file = Path.Combine(path, "metadata.xml");
             if (!File.Exists(file) || !Plain(file))
                 return null;
@@ -100,7 +114,12 @@ namespace BetterMultiplayer
             if (xml.Name != "metadata")
                 return null;
 
-            string folder = ((string)xml.Element("directory") ?? Path.GetFileName(path)).Trim().ToLowerInvariant();
+            string folder = ((string)xml.Element("directory") ?? actualFolder).Trim().ToLowerInvariant();
+            if (GoodTripName.IsMatch((string)xml.Element("name") ?? "") || GoodTripName.IsMatch(folder))
+            {
+                if (blocked != null) blocked.Add(actualFolder);
+                return null;
+            }
             if (!SafeFolder(folder))
                 throw new IOException("请核对 Mod 目录名「" + folder + "」。");
             string id = ((string)xml.Element("id") ?? "").Trim();
@@ -112,33 +131,40 @@ namespace BetterMultiplayer
             return new Installed
             {
                 Path = path,
-                Entry = new ModEntry { Id = workshop ?? (WorkshopId(id) ? id : "local:" + folder), Folder = folder, Version = version }
+                Entry = new ModEntry { Id = workshop ?? (WorkshopId(id) ? id : "local:" + folder),
+                    Folder = folder, Version = version, Name = DisplayName((string)xml.Element("name"), folder) }
             };
         }
 
-        private string ReadOptions()
+        private static string DisplayName(string value, string folder)
         {
-            string text = ConfigEncoding().GetString(File.ReadAllBytes(options));
-            if (EnabledSetting.Matches(text).Count != 1)
-                throw new IOException("请在游戏设置里确认 Mod 总开关。");
-            return text;
-        }
-
-        private Encoding ConfigEncoding()
-        {
-            using (var file = File.OpenRead(options))
+            string name = DisplayWhitespace.Replace(value ?? "", " ").Trim();
+            if (name.Length > 100)
             {
-                int first = file.ReadByte(), second = file.ReadByte();
-                if (first == 0xff && second == 0xfe) return new UnicodeEncoding(false, false);
-                if (first == 0xfe && second == 0xff) return new UnicodeEncoding(true, false);
-                return OptionsEncoding;
+                int end = Char.IsHighSurrogate(name[99]) ? 99 : 100;
+                name = name.Substring(0, end).TrimEnd();
             }
+            return name.Length == 0 ? folder : name;
         }
 
-        private void Export()
+        private void Prepare()
+        {
+            var blocked = new List<string>();
+            var installed = InstalledMods(blocked);
+            Publish(Path.Combine(session, "blocked-mods.txt"), String.Join("\n", blocked), Utf8);
+            PublishInstalled(installed);
+        }
+
+        private void PublishInstalled(List<Installed> installed)
+        {
+            Publish(Path.Combine(session, "installed.txt"), String.Join(",", installed.Select(item => item.Entry.Id)
+                .Where(WorkshopId).Distinct(StringComparer.Ordinal)), Utf8);
+        }
+
+        private void Export(bool enabled)
         {
             var installed = InstalledMods();
-            var profile = new ModProfile { Enabled = EnabledSetting.Match(ReadOptions()).Groups[2].Value == "1" };
+            var profile = new ModProfile { Enabled = enabled };
             if (profile.Enabled)
             {
                 foreach (var item in installed.Where(item => !File.Exists(Path.Combine(item.Path, "disable.it")))
@@ -151,8 +177,7 @@ namespace BetterMultiplayer
                     profile.Mods.Add(mod);
                 }
             }
-            Publish(Path.Combine(session, "installed.txt"), String.Join(",", installed.Select(item => item.Entry.Id)
-                .Where(WorkshopId).Distinct(StringComparer.Ordinal)), Utf8);
+            PublishInstalled(installed);
             Publish(Path.Combine(session, "local.txt"), Encode(profile), Utf8);
         }
 
@@ -178,9 +203,11 @@ namespace BetterMultiplayer
 
         private string Encode(ModProfile profile)
         {
-            string wire = "BM1\n" + String.Join(",", profile.Mods.Select(mod => mod.Id).Where(WorkshopId)) +
-                "\n" + Convert.ToBase64String(Utf8.GetBytes(json.Serialize(profile)));
-            if (profile.Mods.Count > 256 || wire.Length > MaxManifest)
+            var workshop = profile.Mods.Where(mod => WorkshopId(mod.Id)).ToList();
+            string wire = "BM2\n" + String.Join(",", workshop.Select(mod => mod.Id)) + "\n" +
+                String.Join("\t", workshop.Select(mod => mod.Name)) + "\n" +
+                Convert.ToBase64String(Utf8.GetBytes(json.Serialize(profile)));
+            if (profile.Mods.Count > 256 || Utf8.GetByteCount(wire) > MaxManifest)
                 throw new IOException("请精简本房的 Mod 设置后重新建房。");
             return wire;
         }
@@ -188,9 +215,9 @@ namespace BetterMultiplayer
         private ModProfile Decode(string wire)
         {
             var lines = wire.Split('\n');
-            if (wire.Length > MaxManifest || lines.Length != 3 || lines[0] != "BM1")
+            if (Utf8.GetByteCount(wire) > MaxManifest || lines.Length != 4 || lines[0] != "BM2")
                 throw new IOException("请与房主使用同一版好友联机安装包。");
-            var profile = json.Deserialize<ModProfile>(Utf8.GetString(Convert.FromBase64String(lines[2])));
+            var profile = json.Deserialize<ModProfile>(Utf8.GetString(Convert.FromBase64String(lines[3])));
             if (profile == null || profile.Mods == null || profile.Mods.Count > 256 || !profile.Enabled && profile.Mods.Count > 0)
                 throw new IOException("请房主重新创建好友房。");
 
@@ -198,7 +225,8 @@ namespace BetterMultiplayer
             var folders = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var mod in profile.Mods)
             {
-                if (mod == null || !SafeFolder(mod.Folder) || mod.Version == null || mod.Version.Length > 120 ||
+                if (mod == null || !SafeFolder(mod.Folder) || GoodTripName.IsMatch(mod.Folder) ||
+                    mod.Version == null || mod.Version.Length > 120 || mod.Name != DisplayName(mod.Name, mod.Folder) ||
                     (!WorkshopId(mod.Id) && mod.Id != "local:" + mod.Folder) ||
                     !ids.Add(mod.Id) || !folders.Add(mod.Folder) || mod.Settings == null)
                     throw new IOException("请房主核对启用的 Mod 清单。");
@@ -212,7 +240,9 @@ namespace BetterMultiplayer
                         throw new IOException("请房主核对 Mod Config Menu 设置。");
                 }
             }
-            if (lines[1] != String.Join(",", profile.Mods.Select(mod => mod.Id).Where(WorkshopId)))
+            var workshop = profile.Mods.Where(mod => WorkshopId(mod.Id)).ToList();
+            if (lines[1] != String.Join(",", workshop.Select(mod => mod.Id)) ||
+                lines[2] != String.Join("\t", workshop.Select(mod => mod.Name)))
                 throw new IOException("请房主刷新 Mod 清单后重新邀请。");
             return profile;
         }
@@ -297,7 +327,7 @@ namespace BetterMultiplayer
             }
         }
 
-        private void Apply()
+        private bool Apply()
         {
             var profile = Decode(File.ReadAllText(Path.Combine(session, "host.txt"), Utf8));
             var locations = File.ReadAllLines(Path.Combine(session, "items.txt"), Utf8)
@@ -362,19 +392,11 @@ namespace BetterMultiplayer
                         actions.Add(() => ChangeFile(flag, "", Utf8, backup, undo));
                 }
             }
-            string originalOptions = ReadOptions();
-            string updatedOptions = EnabledSetting.Replace(originalOptions, m => m.Groups[1].Value + (profile.Enabled ? "1" : "0"));
-            if (updatedOptions != originalOptions)
-            {
-                Encoding encoding = ConfigEncoding();
-                actions.Add(() => ChangeFile(options, updatedOptions, encoding, backup, undo));
-            }
-
             try
             {
                 foreach (var change in actions)
                     change();
-                Export();
+                Export(profile.Enabled);
                 if (File.ReadAllText(Path.Combine(session, "local.txt"), Utf8) != Encode(profile))
                     throw new IOException("请核对同步后的 Mod 组合。");
             }
@@ -384,6 +406,7 @@ namespace BetterMultiplayer
                     undo.Pop()();
                 throw;
             }
+            return profile.Enabled;
         }
 
         private void PlanSettings(ModEntry mod, List<Action> actions, string backup, Stack<Action> undo)

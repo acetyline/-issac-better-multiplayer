@@ -1,4 +1,5 @@
 #include <windows.h>
+#include "bm_game_build.h"
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -11,14 +12,17 @@
 enum {
     LOBBY_PRIVATE = 0,
     LOBBY_FRIENDS = 1,
+    LOBBY_PUBLIC = 2,
+    LOBBY_INVISIBLE = 3,
     ROSTER_PARTS = 12, ROSTER_PART_SIZE = 2048
 };
 
 static const char lobby_key[] = "bettermultiplayer_j511_owner";
+static const char public_key[] = "bettermultiplayer_j511_public";
 static const char member_key[] = "bettermultiplayer_j511_transport";
 static const char sync_member[] = "bm_j511_mod_ready";
-static const char protocol[] = "friends-v1";
-static const char sync_protocol[] = "friends-v6";
+static const char j511_protocol[] = "friends-v1", j514_protocol[] = "friends-v2";
+static const char j511_sync_protocol[] = "friends-v9", j514_sync_protocol[] = "friends-va";
 static const char roster_prefix[] = "bm_j511_roster_";
 static char roster_parts[ROSTER_PARTS][ROSTER_PART_SIZE];
 static char ready_value[8];
@@ -27,6 +31,7 @@ static unsigned roster_count;
 typedef struct { void **methods; } Matchmaking;
 static Matchmaking *stock;
 static uint64_t pending_create, pending_join, verified_lobby, verified_owner;
+static bool pending_public;
 static ULONGLONG create_expires;
 static uint64_t waiting_join, cancelled_join;
 static ULONGLONG join_expires, next_probe;
@@ -99,9 +104,16 @@ void bm_friends_create_failed(uint64_t request)
         pending_create = 0;
 }
 
+static const char *sync_protocol(void)
+{
+    return bm_game_j514 ? j514_sync_protocol : j511_sync_protocol;
+}
+
 static const char *room_protocol(void)
 {
-    return GetEnvironmentVariableW(L"BETTERMULTIPLAYER_MODSYNC", NULL, 0) > 0 ? sync_protocol : protocol;
+    if (GetEnvironmentVariableW(L"BETTERMULTIPLAYER_MODSYNC", NULL, 0) > 0)
+        return sync_protocol();
+    return bm_game_j514 ? j514_protocol : j511_protocol;
 }
 
 static uint64_t expected_owner(uint64_t lobby)
@@ -117,7 +129,13 @@ static uint64_t expected_owner(uint64_t lobby)
 static uint64_t __thiscall request_lobby_list(Matchmaking *self)
 {
     (void)self;
-    return 0;
+    if (room_protocol() != sync_protocol())
+        return 0;
+    filter_string(NULL, public_key, sync_protocol(), 0);
+    const uint64_t call = METHOD(uint64_t, 4, (Matchmaking *))(stock);
+    if (report)
+        report(call ? "Steam public lobby search requested.\r\n" : "Steam could not start a public lobby search.\r\n");
+    return call;
 }
 
 static void cancel_join(void)
@@ -139,16 +157,17 @@ static void __cdecl join_dialog(const uint32_t *choice, void *operation)
 bool bm_friends_install_cancel(void)
 {
     uint8_t *image = (uint8_t *)GetModuleHandleW(NULL);
-    enum { JOIN_DIALOG = 0x5172d0, DIALOG_HANDLER_PUSH = 0x51c006 };
-    uint8_t *site = image + DIALOG_HANDLER_PUSH;
+    const unsigned join_dialog_rva = BM_GAME_RVA(0x5172d0, 0x5177d0);
+    const unsigned dialog_handler_push = BM_GAME_RVA(0x51c006, 0x51c506);
+    uint8_t *site = image + dialog_handler_push;
     const IMAGE_DOS_HEADER *dos = (const IMAGE_DOS_HEADER *)image;
     const IMAGE_NT_HEADERS32 *pe = (const IMAGE_NT_HEADERS32 *)(image + dos->e_lfanew);
     if (pe->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR32_MAGIC ||
-        pe->OptionalHeader.SizeOfImage < DIALOG_HANDLER_PUSH + 5 || site[0] != 0x68)
+        pe->OptionalHeader.SizeOfImage < dialog_handler_push + 5 || site[0] != 0x68)
         return false;
     uintptr_t original;
     memcpy(&original, site + 1, sizeof(original));
-    if (original != (uintptr_t)(image + JOIN_DIALOG))
+    if (original != (uintptr_t)(image + join_dialog_rva))
         return false;
     DWORD access, discarded;
     if (!VirtualProtect(site, 5, PAGE_EXECUTE_READWRITE, &access))
@@ -164,7 +183,8 @@ bool bm_friends_install_cancel(void)
 static uint64_t __thiscall create_lobby(Matchmaking *self, int type, int limit)
 {
     (void)self;
-    if (!private_type(type) || limit < 2 || limit > 4) {
+    const bool public_room = room_protocol() == sync_protocol() && (type == LOBBY_PUBLIC || type == LOBBY_INVISIBLE);
+    if ((!private_type(type) && !public_room) || limit < 2 || limit > 4) {
         if (report)
             report("Friend lobby create requested an unsupported room type or size.\r\n");
         return 0;
@@ -176,10 +196,14 @@ static uint64_t __thiscall create_lobby(Matchmaking *self, int type, int limit)
     }
     cancel_join();
     pending_create = METHOD(uint64_t, 13, (Matchmaking *, int, int))(stock, type, limit);
+    pending_public = public_room;
     create_expires = GetTickCount64() + 30000;
-    if (report)
-        report(pending_create ? "Steam friend lobby create requested.\r\n" :
-                                "Steam returned an empty friend lobby create handle.\r\n");
+    if (report) {
+        if (!pending_create)
+            report("Steam returned an empty lobby create handle.\r\n");
+        else
+            report(public_room ? "Steam public lobby create requested.\r\n" : "Steam friend lobby create requested.\r\n");
+    }
     return pending_create;
 }
 
@@ -281,19 +305,23 @@ static void __thiscall leave_lobby(Matchmaking *self, uint64_t lobby)
 static bool __thiscall update_type(Matchmaking *self, uint64_t lobby, int type)
 {
     (void)self;
-    return private_type(type) && METHOD(bool, 33, (Matchmaking *, uint64_t, int))(stock, lobby, type);
+    const bool allows_public = bm_friends_public_lobby(lobby, verified_owner);
+    return (private_type(type) || (allows_public && (type == LOBBY_PUBLIC || type == LOBBY_INVISIBLE))) &&
+           METHOD(bool, 33, (Matchmaking *, uint64_t, int))(stock, lobby, type);
 }
 
 static bool __thiscall write_lobby_data(Matchmaking *self, uint64_t lobby, const char *key, const char *value)
 {
     (void)self;
-    return key && strcmp(key, lobby_key) != 0 && METHOD(bool, 20, (Matchmaking *, uint64_t, const char *, const char *))(stock, lobby, key, value);
+    return key && strcmp(key, lobby_key) != 0 && strcmp(key, public_key) != 0 &&
+           METHOD(bool, 20, (Matchmaking *, uint64_t, const char *, const char *))(stock, lobby, key, value);
 }
 
 static bool __thiscall delete_lobby_data(Matchmaking *self, uint64_t lobby, const char *key)
 {
     (void)self;
-    return key && strcmp(key, lobby_key) != 0 && METHOD(bool, 23, (Matchmaking *, uint64_t, const char *))(stock, lobby, key);
+    return key && strcmp(key, lobby_key) != 0 && strcmp(key, public_key) != 0 &&
+           METHOD(bool, 23, (Matchmaking *, uint64_t, const char *))(stock, lobby, key);
 }
 
 static void __thiscall write_member_data(Matchmaking *self, uint64_t lobby, const char *key, const char *value)
@@ -357,12 +385,14 @@ bool bm_accept_friends_lobby(uint64_t lobby, uint64_t local)
         snprintf(value, sizeof(value), "%s:%llu", room_protocol(), (unsigned long long)local);
         if (!METHOD(bool, 20, (Matchmaking *, uint64_t, const char *, const char *))(stock, lobby, lobby_key, value))
             return false;
+        if (pending_public && !METHOD(bool, 20, (Matchmaking *, uint64_t, const char *, const char *))(stock, lobby, public_key, sync_protocol()))
+            return false;
     }
     if (joining)
         pending_join = 0;
     verified_lobby = lobby;
     verified_owner = owner;
-    METHOD(void, 25, (Matchmaking *, uint64_t, const char *, const char *))(stock, lobby, member_key, protocol);
+    METHOD(void, 25, (Matchmaking *, uint64_t, const char *, const char *))(stock, lobby, member_key, room_protocol());
     return true;
 }
 
@@ -374,7 +404,15 @@ bool bm_friends_room_marked(uint64_t lobby, uint64_t owner)
 bool bm_friends_member_marked(uint64_t lobby, uint64_t peer)
 {
     const char *value = get_member_data(NULL, lobby, peer, member_key);
-    return value && strcmp(value, protocol) == 0;
+    return value && strcmp(value, room_protocol()) == 0;
+}
+
+bool bm_friends_public_lobby(uint64_t lobby, uint64_t owner)
+{
+    if (!stock || !owner || !valid_lobby(lobby) || room_protocol() != sync_protocol() || expected_owner(lobby) != owner)
+        return false;
+    const char *value = get_lobby_data(NULL, lobby, public_key);
+    return value && strcmp(value, sync_protocol()) == 0;
 }
 
 bool bm_friends_lobby_enrolled(uint64_t lobby, uint64_t owner)

@@ -1,19 +1,21 @@
 #include "bm_recovery.h"
+#include "bm_game_build.h"
 #include "bm_friends.h"
 
 #include <stdio.h>
 #include <string.h>
+
+#define DESYNC_COMPLETE_CALL BM_GAME_RVA(0x50961f, 0x509b0f)
+#define DESYNC_REBUILD_CALL BM_GAME_RVA(0x5098da, 0x509dca)
+#define DESYNC_TIMEOUT_REBUILD_CALL BM_GAME_RVA(0x509c7a, 0x50a16a)
+#define NATIVE_SEND_COMPLETE BM_GAME_RVA(0x52a080, 0x52a590)
+#define NATIVE_REBUILD_LOBBY BM_GAME_RVA(0x5165b0, 0x516aa0)
 
 enum {
     RECOVERY_WINDOW_MS = 120000,
     ROOM_SETTLE_MS = 1000,
     POLL_INTERVAL_MS = 1000,
     STEAM_FRIEND = 3,
-    DESYNC_COMPLETE_CALL = 0x50961f,
-    DESYNC_REBUILD_CALL = 0x5098da,
-    DESYNC_TIMEOUT_REBUILD_CALL = 0x509c7a,
-    NATIVE_SEND_COMPLETE = 0x52a080,
-    NATIVE_REBUILD_LOBBY = 0x5165b0
 };
 
 static const char presence_key[] = "bettermultiplayer_j511_recovery";

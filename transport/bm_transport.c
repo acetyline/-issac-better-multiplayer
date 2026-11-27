@@ -9,15 +9,20 @@
 
 #include "bm_characters.h"
 #include "bm_friends.h"
+#include "bm_game_build.h"
 #include "bm_goodtrip.h"
 #include "bm_modsync.h"
 #include "bm_recovery.h"
 #include "bm_room_recovery.h"
+#include "bm_settings.h"
 #include "bm_speed.h"
 
 #if !defined(__i386__) && !defined(_M_IX86)
-#error This library implements the J511 x86 Steamworks ABI.
+#error This library implements the x86 Steamworks ABI.
 #endif
+
+bool bm_game_j514;
+static bool settings_ready;
 
 enum {
     BM_DATA_CHANNEL = 54808,
@@ -79,7 +84,7 @@ typedef struct {
     uint64_t owner, members[BM_MAX_PEERS + 1];
     ULONGLONG expires;
     unsigned count, allowed;
-    bool has_local, owner_is_friend;
+    bool has_local, owner_allowed, public_room;
 } Room;
 
 typedef struct {
@@ -258,8 +263,9 @@ static void refresh_room(ULONGLONG now)
     room = (Room){ .expires = now + BM_ROOM_CACHE_MS };
     if (friends_room_only) {
         room.owner = bm_friends_lobby_owner(active_lobby);
-        room.owner_is_friend = room.owner && room.owner != local_user &&
-                               get_friend_relationship(friends, room.owner) == STEAM_FRIEND;
+        room.public_room = bm_friends_public_lobby(active_lobby, room.owner);
+        room.owner_allowed = room.owner && room.owner != local_user &&
+                             (room.public_room || get_friend_relationship(friends, room.owner) == STEAM_FRIEND);
     }
 
     const int count = get_member_count(matchmaking, active_lobby);
@@ -273,7 +279,8 @@ static void refresh_room(ULONGLONG now)
         if (member == local_user) {
             room.has_local = true;
         } else if (member && marked &&
-                   (member == room.owner ? room.owner_is_friend : get_friend_relationship(friends, member) == STEAM_FRIEND) &&
+                   (room.public_room || (member == room.owner ? room.owner_allowed :
+                                         get_friend_relationship(friends, member) == STEAM_FRIEND)) &&
                    (!friends_room_only || bm_friends_member_marked(active_lobby, member))) {
             room.allowed |= 1u << i;
         }
@@ -300,6 +307,24 @@ static int goodtrip_room_role(void)
 static bool modsync_enabled(void)
 {
     return bm_friends_only() && GetEnvironmentVariableW(L"BETTERMULTIPLAYER_MODSYNC", NULL, 0) > 0;
+}
+
+BOOL WINAPI DllMain(HINSTANCE module, DWORD reason, LPVOID reserved)
+{
+    (void)module;
+    (void)reserved;
+    // Install before the game loads its base Lua scripts, even with an empty mod list.
+    if (reason == DLL_PROCESS_ATTACH) {
+        const uint8_t *image = (const uint8_t *)GetModuleHandleW(NULL);
+        const IMAGE_DOS_HEADER *dos = (const IMAGE_DOS_HEADER *)image;
+        const IMAGE_NT_HEADERS32 *pe = (const IMAGE_NT_HEADERS32 *)(image + dos->e_lfanew);
+        bm_game_j514 = pe->FileHeader.TimeDateStamp == 0x6b0775bf;
+        settings_ready = bm_settings_install(bm_friends_only());
+        report(settings_ready ? "Session options hooks ready.\r\n" : "Session options hooks unavailable.\r\n");
+        if (modsync_enabled())
+            bm_goodtrip_install(goodtrip_room_role, goodtrip_room_owner, report);
+    }
+    return TRUE;
 }
 
 static bool permitted_peer(uint64_t id);
@@ -360,7 +385,7 @@ static bool lobby_mods_ready(void)
     for (unsigned i = 0; ready && i < room.count; ++i) {
         const uint64_t member = room.members[i];
         if (member != local_user)
-            ready = bm_friends_synced(active_lobby, member);
+            ready = (room.allowed & (1u << i)) && bm_friends_synced(active_lobby, member);
     }
     LeaveCriticalSection(&queue_lock);
     return ready;
@@ -380,7 +405,7 @@ static void recover_lobby(void)
         const uint64_t owner = bm_friends_lobby_enrolled(active_lobby, room.owner) ? room.owner : 0;
         if (active_lobby && friends_room_only && !owner)
             change_lobby(0);
-        if (owner == local_user || room.owner_is_friend) {
+        if (owner && (owner == local_user || room.owner_allowed)) {
             bm_modsync_tick(active_lobby, local_user, owner);
             if (bm_modsync_wants_messages())
                 receive_modsync();
@@ -398,8 +423,9 @@ static void recover_lobby(void)
     LeaveCriticalSection(&queue_lock);
 
     if (request.lobby) {
-        if (get_friend_relationship(friends, request.friend_id) == STEAM_FRIEND) {
-            report("Dispatching the verified friend lobby join.\r\n");
+        if (get_friend_relationship(friends, request.friend_id) == STEAM_FRIEND ||
+            bm_friends_public_lobby(request.lobby, request.friend_id)) {
+            report("Dispatching the verified lobby join.\r\n");
             callback->methods->run(callback, &request);
         }
     }
@@ -635,6 +661,10 @@ static BOOL CALLBACK initialize_adapter(PINIT_ONCE once, PVOID parameter, PVOID 
     register_callback(&data_callback, STEAM_LOBBY_DATA_UPDATE);
     register_callback(&persona_callback, STEAM_PERSONA_STATE_CHANGE);
     report("Steam P2P adapter ready.\r\n");
+    report(bm_room_item_copy_install() ? "Room item buffer guard ready.\r\n" :
+                                         "Room item buffer guard setup failed.\r\n");
+    report(bm_pickup_anim_install() ? "Modded pickup animation fallback ready.\r\n" :
+                                      "Modded pickup animation fallback setup failed.\r\n");
     if (friends_room_only) {
         bm_friends_set_reporter(report);
         if (!bm_friends_install_cancel())
@@ -652,7 +682,8 @@ static BOOL CALLBACK initialize_adapter(PINIT_ONCE once, PVOID parameter, PVOID 
             report(room_ready ? "Host room checkpoint recovery ready.\r\n" :
                                 "Host room checkpoint recovery setup failed.\r\n");
         }
-        bm_modsync_init(steam, lobby_mods_ready, send_modsync, goodtrip_ready && characters_ready && speed_ready && room_ready);
+        bm_modsync_init(steam, lobby_mods_ready, send_modsync,
+                        settings_ready && goodtrip_ready && characters_ready && speed_ready && room_ready);
         report(recovery_enabled ? "Host checkpoint recovery ready.\r\n" :
                                  "Host checkpoint recovery setup failed.\r\n");
     }
@@ -1096,12 +1127,7 @@ void *__cdecl SteamInternal_ContextInit(void *data)
 int __cdecl SteamInternal_SteamAPI_Init(const char *versions, char *error)
 {
     int (__cdecl *call)(const char *, char *) = (int (__cdecl *)(const char *, char *))(void *)valve_proc("SteamInternal_SteamAPI_Init");
-    if (call) {
-        int result = call(versions, error);
-        if (result == 0 && modsync_enabled())
-            bm_goodtrip_install(goodtrip_room_role, goodtrip_room_owner, report);
-        return result;
-    }
+    if (call) return call(versions, error);
     if (error) strcpy(error, "Better Multiplayer: unable to load the installed Steamworks library.");
     return 1;
 }

@@ -1,15 +1,15 @@
-name: Build and release J511 Friends
+name: Build and release Better Multiplayer Friends
 
 on:
   push:
     tags:
-      - v0.3.0-preview-J511
+      - v0.4.0
 
 permissions:
   contents: write
 
 concurrency:
-  group: j511-friends-release
+  group: better-multiplayer-friends-release
   cancel-in-progress: false
 
 jobs:
@@ -51,7 +51,7 @@ jobs:
           }
 
           $runUrl = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
-          $notes = "Windows Steam 版 Repentance+ 1.9.7.19.J511 好友联机预览。存档路径记录读成乱码时，从 Windows 文档目录读取 options.ini。[构建记录]($runUrl)"
+          $notes = "支持 Windows Steam 版 Repentance+ 1.9.7.19.J511 和 1.9.7.20.J514。包含好友房、公开房、Mod 同步和独立的 EXE 安装与启动流程。[构建记录]($runUrl)"
 
           gh release view $tag --json databaseId *> $null
           if ($LASTEXITCODE -eq 0) {
@@ -60,5 +60,5 @@ jobs:
             gh release edit $tag --notes $notes
           } else {
             gh release create $tag $env:SETUP_EXE --verify-tag --prerelease `
-              --title 'Better Multiplayer 0.3.0 Preview J511 Friends' --notes $notes
+              --title "Better Multiplayer $($tag.TrimStart('v')) 预览版" --notes $notes
           }

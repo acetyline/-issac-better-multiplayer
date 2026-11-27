@@ -1,15 +1,25 @@
 #include <windows.h>
+#include "bm_game_build.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
 #include "bm_characters.h"
 
+#define STOCK_CHECK BM_GAME_RVA(0x55f030, 0x55f540)
+#define STOCK_TYPE_TO_SLOT BM_GAME_RVA(0x55f0b0, 0x55f5c0)
+#define CHECK_ACHIEVEMENT BM_GAME_RVA(0x55c0c0, 0x55c5d0)
+#define STOCK_TAINTED BM_GAME_RVA(0x4f7c00, 0x4f8080)
+#define LOBBY_CHECK BM_GAME_RVA(0x4f2717, 0x4f2ba7)
+#define TOGGLE_CHECK BM_GAME_RVA(0x4f7ac2, 0x4f7f42)
+#define CYCLE BM_GAME_RVA(0x4f7b2a, 0x4f7faa)
+#define CYCLE_DONE BM_GAME_RVA(0x4f7b7d, 0x4f7ffd)
+#define CUSTOM_PAIRS BM_GAME_RVA(0x89dfdc, 0x89f0dc)
+#define APPEND_PAIR BM_GAME_RVA(0x5638f0, 0x563e10)
+#define GAME BM_GAME_RVA(0x89a094, 0x89b194)
+
 enum {
     STOCK_SLOTS = 18, LAST_SLOT = 254, FIRST_CUSTOM_TYPE = 41,
-    STOCK_CHECK = 0x55f030, CHECK_ACHIEVEMENT = 0x55c0c0, STOCK_TAINTED = 0x4f7c00,
-    LOBBY_CHECK = 0x4f2717, TOGGLE_CHECK = 0x4f7ac2, CYCLE = 0x4f7b2a, CYCLE_DONE = 0x4f7b7d,
-    CUSTOM_PAIRS = 0x89dfdc, APPEND_PAIR = 0x5638f0, GAME = 0x89a094,
     CONFIG_BEGIN = 0x2a948, CONFIG_END = 0x2a94c, CONFIG_SIZE = 0x148,
     CONFIG_NAME = 4, CONFIG_PORTRAIT = 0x4c, CONFIG_PARENT = 0x11c,
     CONFIG_ALT = 0x124, CONFIG_HIDDEN = 0x128,
@@ -23,6 +33,7 @@ _Static_assert(offsetof(LobbySelection, slot) == 8 && sizeof(LobbySelection) == 
 
 static uint8_t *image_base;
 static bool (__fastcall *stock_check)(unsigned, int);
+static void *stock_type_to_slot __attribute__((used));
 static bool (__cdecl *stock_tainted)(void);
 static bool (__thiscall *achievement_unlocked)(const int *, int);
 static void (__stdcall *append_pair)(CharacterPair *, const CharacterPair *);
@@ -184,6 +195,49 @@ bool bm_characters_roster(char *text, size_t capacity)
     return true;
 }
 
+static bool __cdecl custom_type_to_slot(int player_type, int *out_slot, uint8_t *out_tainted) __attribute__((used, noinline));
+static bool __cdecl custom_type_to_slot(int player_type, int *out_slot, uint8_t *out_tainted)
+{
+    if (player_type < FIRST_CUSTOM_TYPE || !out_slot || !out_tainted)
+        return false;
+    bm_characters_prepare();
+    unsigned count;
+    const CharacterPair *pairs = characters(&count);
+    for (unsigned i = 0; i < count; ++i) {
+        if (pairs[i].normal == player_type) {
+            *out_slot = (int)(STOCK_SLOTS + i);
+            *out_tainted = 0;
+            return true;
+        }
+        if (pairs[i].tainted == player_type) {
+            *out_slot = (int)(STOCK_SLOTS + i);
+            *out_tainted = 1;
+            return true;
+        }
+    }
+    return false;
+}
+
+__attribute__((naked))
+static void type_to_slot_hook(void)
+{
+    __asm__ volatile(
+        "pushl %ecx\n\t"
+        "pushl %edx\n\t"
+        "pushl 12(%esp)\n\t"
+        "pushl %edx\n\t"
+        "pushl %ecx\n\t"
+        "call _custom_type_to_slot\n\t"
+        "addl $12, %esp\n\t"
+        "popl %edx\n\t"
+        "popl %ecx\n\t"
+        "testb %al, %al\n\t"
+        "jnz 1f\n\t"
+        "jmp *_stock_type_to_slot\n\t"
+        "1: ret"
+    );
+}
+
 static bool matches_call(const uint8_t *image, unsigned site, unsigned target)
 {
     int32_t distance;
@@ -205,7 +259,7 @@ bool bm_characters_install(void)
     uint8_t *image = (uint8_t *)GetModuleHandleW(NULL);
     const IMAGE_DOS_HEADER *dos = (const IMAGE_DOS_HEADER *)image;
     const IMAGE_NT_HEADERS32 *pe = (const IMAGE_NT_HEADERS32 *)(image + dos->e_lfanew);
-    const unsigned tainted_calls[] = { 0x4f56b0, 0x4f6ca5, 0x4f6d56, 0x4f7869 };
+    const unsigned tainted_calls[] = { BM_GAME_RVA(0x4f56b0, 0x4f5b30), BM_GAME_RVA(0x4f6ca5, 0x4f7125), BM_GAME_RVA(0x4f6d56, 0x4f71d6), BM_GAME_RVA(0x4f7869, 0x4f7ce9) };
     static const uint8_t toggle[] = { 0x8d, 0x04, 0x52, 0x8d, 0x0c, 0xc5 };
     static const uint8_t cycle[] = { 0x8a, 0x7f, 0x08, 0x33, 0xf6, 0x80, 0x7f, 0x09, 0x00, 0xb9, 0x12, 0, 0, 0 };
     static const uint8_t resume[] = { 0x81, 0x7d, 0xf8, 0xe9, 0x03, 0x00, 0x00 };
@@ -250,5 +304,24 @@ bool bm_characters_install(void)
     write_branch(site + 15, 0xe9, (uintptr_t)(image + CYCLE_DONE));
     FlushInstructionCache(GetCurrentProcess(), image + LOBBY_CHECK, length);
     VirtualProtect(image + LOBBY_CHECK, length, access, &discarded);
+
+    stock_type_to_slot = (void *)(image + STOCK_TYPE_TO_SLOT);
+    const unsigned type_to_slot_calls[] = {
+        0x269db,
+        BM_GAME_RVA(0x4f25ef, 0x4f2a7f),
+        BM_GAME_RVA(0x4f4100, 0x4f4580),
+        BM_GAME_RVA(0x521f0a, 0x52241a)
+    };
+    for (unsigned i = 0; i < sizeof(type_to_slot_calls) / sizeof(type_to_slot_calls[0]); ++i) {
+        const unsigned rva = type_to_slot_calls[i];
+        if (!matches_call(image, rva, STOCK_TYPE_TO_SLOT))
+            continue;
+        DWORD old_prot, tmp_prot;
+        if (VirtualProtect(image + rva, 5, PAGE_EXECUTE_READWRITE, &old_prot)) {
+            write_branch(image + rva, 0xe8, (uintptr_t)type_to_slot_hook);
+            FlushInstructionCache(GetCurrentProcess(), image + rva, 5);
+            VirtualProtect(image + rva, 5, old_prot, &tmp_prot);
+        }
+    }
     return true;
 }

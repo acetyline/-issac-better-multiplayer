@@ -1,16 +1,35 @@
 #include <windows.h>
+#include "bm_game_build.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
 #include "bm_room_recovery.h"
 
+#define UPDATE_CALL BM_GAME_RVA(0x56aa51, 0x56af81)
+#define RESET_POSITIONS BM_GAME_RVA(0x52ba4a, 0x52bf5a)
+#define PROCESS_JOINS BM_GAME_RVA(0x520610, 0x520b10)
+#define ROOM_FRAME BM_GAME_RVA(0x41c3e0, 0x41c370)
+#define ROOM_ENEMIES BM_GAME_RVA(0x5a3f0, 0x5a380)
+#define GAME_OBJECT BM_GAME_RVA(0x8994f8, 0x89a5f8)
+#define NET_OBJECT BM_GAME_RVA(0x89a094, 0x89b194)
+
+#define ROOM_ITEM_CLEAR BM_GAME_RVA(0x52e2d4, 0x52e7e4)
+#define ROOM_ITEM_COPY BM_GAME_RVA(0x52e300, 0x52e810)
+#define NATIVE_COPY BM_GAME_RVA(0x710dff, 0x7114cf)
+#define ROOM_ITEM_BUFFER BM_GAME_RVA(0x899520, 0x89a620)
+#define PICKUP_ANIM_CALL BM_GAME_RVA(0x3b3c0a, 0x3b3c2b)
+#define PLAY_EXTRA_ANIM BM_GAME_RVA(0x3b499f, 0x3b49c0)
+#define ANM2_IS_PLAYING 0x00b790
+
 enum {
-    UPDATE_CALL = 0x56aa51, UPDATE_GAME = 0x301950,
-    RESET_POSITIONS = 0x52ba4a,
-    PROCESS_JOINS = 0x520610,
-    GAME_PAUSED = 0x304190, ROOM_CLEAR = 0x27d10, ROOM_FRAME = 0x41c3e0, ROOM_ENEMIES = 0x5a3f0,
-    GAME_OBJECT = 0x8994f8, NET_OBJECT = 0x89a094,
+    ROOM_ITEM_BUFFER_BYTES = 733 * sizeof(uint32_t),
+    PLAYER_SPRITE_OFFSET = 0x41c
+};
+
+enum {
+    UPDATE_GAME = 0x301950,
+    GAME_PAUSED = 0x304190, ROOM_CLEAR = 0x27d10,
     GAME_MODE = 8, GAMEPLAY = 2, NET_TRANSITION = 0x4b400,
     NET_FRAME = 0x4b6b4, NET_MANAGER = 0x4b6a8, PENDING_JOINS = 0x1938,
     CURRENT_ROOM = 0x18300, CURRENT_ROOM_INDEX = 0x18304, GAME_FRAME = 0x26508,
@@ -30,6 +49,85 @@ static void (*report_checkpoint)(const char *);
 
 static bool room_checkpoint_sending __attribute__((used));
 static bool room_checkpoint_encoded __attribute__((used));
+static void *(__cdecl *copy_room_items_native)(void *, const void *, size_t);
+static void (__thiscall *play_extra_anim_native)(void *, const char *);
+static bool (__thiscall *anm2_is_playing_native)(void *, const char *);
+
+static void __thiscall play_pickup_anim_safe(uint8_t *player, const char *anim)
+{
+    play_extra_anim_native(player, anim);
+    if (anim && strcmp(anim, "Pickup_Online") == 0 &&
+        !anm2_is_playing_native(player + PLAYER_SPRITE_OFFSET, "Pickup_Online"))
+        play_extra_anim_native(player, "Pickup");
+}
+
+bool bm_pickup_anim_install(void)
+{
+    if (play_extra_anim_native)
+        return true;
+    uint8_t *image = (uint8_t *)GetModuleHandleW(NULL);
+    const IMAGE_DOS_HEADER *dos = (const IMAGE_DOS_HEADER *)image;
+    const IMAGE_NT_HEADERS32 *pe = (const IMAGE_NT_HEADERS32 *)(image + dos->e_lfanew);
+    if (pe->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR32_MAGIC ||
+        pe->OptionalHeader.SizeOfImage < PLAY_EXTRA_ANIM + 16)
+        return false;
+
+    uint8_t *site = image + PICKUP_ANIM_CALL;
+    if (memcmp(site, "\xe8\x90\x0d\x00\x00", 5))
+        return false;
+
+    DWORD previous, protection;
+    if (!VirtualProtect(site, 5, PAGE_EXECUTE_READWRITE, &previous))
+        return false;
+    play_extra_anim_native = (__typeof__(play_extra_anim_native))(image + PLAY_EXTRA_ANIM);
+    anm2_is_playing_native = (__typeof__(anm2_is_playing_native))(image + ANM2_IS_PLAYING);
+    const uint32_t offset = (uint32_t)((uintptr_t)play_pickup_anim_safe - ((uintptr_t)site + 5));
+    memcpy(site + 1, &offset, sizeof(offset));
+    FlushInstructionCache(GetCurrentProcess(), site, 5);
+    VirtualProtect(site, 5, previous, &protection);
+    return true;
+}
+
+static void *__cdecl copy_room_items(void *destination, const void *source, size_t size)
+{
+    // The following game loop reads 733 counters. Keep extended item pools inside that buffer.
+    if (size > ROOM_ITEM_BUFFER_BYTES)
+        size = ROOM_ITEM_BUFFER_BYTES;
+    return copy_room_items_native(destination, source, size);
+}
+
+bool bm_room_item_copy_install(void)
+{
+    if (copy_room_items_native)
+        return true;
+
+    uint8_t *image = (uint8_t *)GetModuleHandleW(NULL);
+    const IMAGE_DOS_HEADER *dos = (const IMAGE_DOS_HEADER *)image;
+    const IMAGE_NT_HEADERS32 *pe = (const IMAGE_NT_HEADERS32 *)(image + dos->e_lfanew);
+    if (pe->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR32_MAGIC ||
+        pe->OptionalHeader.SizeOfImage < ROOM_ITEM_BUFFER + ROOM_ITEM_BUFFER_BYTES)
+        return false;
+
+    uint8_t *site = image + ROOM_ITEM_COPY;
+    const uint8_t *clear = image + ROOM_ITEM_CLEAR;
+    const char *expected_call = bm_game_j514 ? "\xe8\xba\x2c\x1e\x00" : "\xe8\xfa\x2a\x1e\x00";
+    uintptr_t destination;
+    memcpy(&destination, site - sizeof(destination), sizeof(destination));
+    if (memcmp(clear, "\x68\x74\x0b\x00\x00", 5) || site[-5] != 0x68 ||
+        destination != (uintptr_t)(image + ROOM_ITEM_BUFFER) ||
+        memcmp(site, expected_call, 5))
+        return false;
+
+    DWORD previous, protection;
+    if (!VirtualProtect(site, 5, PAGE_EXECUTE_READWRITE, &previous))
+        return false;
+    copy_room_items_native = (__typeof__(copy_room_items_native))(image + NATIVE_COPY);
+    const uint32_t offset = (uint32_t)((uintptr_t)copy_room_items - ((uintptr_t)site + 5));
+    memcpy(site + 1, &offset, sizeof(offset));
+    FlushInstructionCache(GetCurrentProcess(), site, 5);
+    VirtualProtect(site, 5, previous, &protection);
+    return true;
+}
 
 static struct {
     const uint8_t *descriptor;
@@ -117,7 +215,8 @@ bool bm_room_recovery_install(bool (*host_recovering)(void), void (*report)(cons
         size_t size;
         uintptr_t target;
     } patches[] = {
-        { UPDATE_CALL, "\xe8\xfa\x6e\xd9\xff", 5, (uintptr_t)update_with_room_recovery },
+        { UPDATE_CALL, bm_game_j514 ? "\xe8\xca\x69\xd9\xff" : "\xe8\xfa\x6e\xd9\xff",
+          5, (uintptr_t)update_with_room_recovery },
         { RESET_POSITIONS, "\x0f\x84\x81\x00\x00\x00", 6, (uintptr_t)preserve_checkpoint_positions }
     };
     const size_t count = sizeof(patches) / sizeof(patches[0]);
