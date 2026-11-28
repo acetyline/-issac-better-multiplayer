@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "bm_locate.h"
 
 #include "bm_characters.h"
 #include "bm_friends.h"
@@ -157,8 +158,18 @@ static void __cdecl join_dialog(const uint32_t *choice, void *operation)
 bool bm_friends_install_cancel(void)
 {
     uint8_t *image = (uint8_t *)GetModuleHandleW(NULL);
-    const unsigned join_dialog_rva = BM_GAME_RVA(0x5172d0, 0x5177d0);
-    const unsigned dialog_handler_push = BM_GAME_RVA(0x51c006, 0x51c506);
+    unsigned join_dialog_rva = BM_GAME_RVA(0x5172d0, 0x5177d0);
+    unsigned dialog_handler_push = BM_GAME_RVA(0x51c006, 0x51c506);
+    /* Prefer pattern resolution so locally patched images beyond the two
+     * known builds keep working; the per-build offsets remain the fallback. */
+    bool patterned = false;
+    if (bm_locate_all()) {
+        const uint32_t located = bm_locate_site(BM_SITE_FRIENDS_DIALOG_PUSH);
+        if (located) {
+            dialog_handler_push = located;
+            patterned = true;
+        }
+    }
     uint8_t *site = image + dialog_handler_push;
     const IMAGE_DOS_HEADER *dos = (const IMAGE_DOS_HEADER *)image;
     const IMAGE_NT_HEADERS32 *pe = (const IMAGE_NT_HEADERS32 *)(image + dos->e_lfanew);
@@ -167,7 +178,10 @@ bool bm_friends_install_cancel(void)
         return false;
     uintptr_t original;
     memcpy(&original, site + 1, sizeof(original));
-    if (original != (uintptr_t)(image + join_dialog_rva))
+    /* On a pattern-resolved site the handler itself may live anywhere in
+     * the image, so validate the pointer range instead of one fixed RVA. */
+    if (patterned ? (original < (uintptr_t)image || original >= (uintptr_t)(image + pe->OptionalHeader.SizeOfImage))
+                  : original != (uintptr_t)(image + join_dialog_rva))
         return false;
     DWORD access, discarded;
     if (!VirtualProtect(site, 5, PAGE_EXECUTE_READWRITE, &access))
