@@ -87,12 +87,12 @@ static const uint8_t mask_modsync_start1[] = {
 static const uint8_t pattern_modsync_start2[] = {
     0xe8, W0, W0, W0, W0, 0x80, 0xbe, 0xc1, 0x06, 0x00, 0x00, 0x00,
     0x74, 0x44, 0xff, 0xb6, 0xc4, 0x06, 0x00, 0x00, 0x68, W0, W0,
-    0xb9, 0x00, 0x6a, 0x01, 0xe8
+    W0, W0, 0x6a, 0x01, 0xe8
 };
 static const uint8_t mask_modsync_start2[] = {
     W1, W1, W1, W1, W1, W0, W0, W0, W0, W0, W0, W0,
     W0, W0, W0, W0, W0, W0, W0, W0, W0, W1, W1,
-    W0, W0, W0, W0, W0
+    W1, W1, W0, W0, W0
 };
 
 static const uint8_t pattern_modsync_send_input[] = {
@@ -108,17 +108,17 @@ static const uint8_t pattern_characters_lobby[] = {
 };
 static const uint8_t mask_characters_lobby[] = {
     W1, W1, W1, W1, W1, W0, W0, W0, W0, W0, W0, W0, W0,
-    W0, W0, W1, W1, W1, W1, W0, W0, W0, W0
+    W0, W0, W1, W1, W1, W1, W0, W0, W0, W0, W0
 };
 
 static const uint8_t pattern_characters_toggle[] = {
     0x0f, 0xb6, 0x47, 0x08, 0x0f, 0x44, 0xd3, 0x03, 0xd0, 0x8d, 0x04, 0x52,
-    0x8d, 0x0c, 0xc5, 0x50, W0, 0xb4, 0x00, 0xe8, W0, W0, W0, W0,
+    0x8d, 0x0c, 0xc5, 0x50, W0, W0, W0, 0xe8, W0, W0, W0, W0,
     0x8b, 0x35, W0, W0, W0, W0
 };
 static const uint8_t mask_characters_toggle[] = {
     W0, W0, W0, W0, W0, W0, W0, W0, W0, W0, W0, W0,
-    W0, W0, W0, W0, W1, W0, W0, W1, W1, W1, W1, W1,
+    W0, W0, W0, W0, W1, W1, W1, W1, W1, W1, W1, W1,
     W0, W0, W1, W1, W1, W1
 };
 
@@ -135,7 +135,7 @@ static const uint8_t pattern_friends_dialog_push[] = {
     0x68, W0, W0, W0, W0, 0x50, 0x8d, 0x8d, 0xc4, 0xfe, 0xff, 0xff, 0xe8
 };
 static const uint8_t mask_friends_dialog_push[] = {
-    W1, W1, W1, W1, W1, W0, W0, W0, W0, W0, W0, W0, W1
+    W0, W1, W1, W1, W1, W0, W0, W0, W0, W0, W0, W0, W1
 };
 
 struct SiteEntry {
@@ -145,22 +145,36 @@ struct SiteEntry {
     uint32_t resolved;
 };
 
-#define ENTRY(pattern) { pattern, mask_##pattern, sizeof(pattern), 0 }
+#define ENTRY(pattern, mask) { pattern, mask, sizeof(pattern), 0 }
+
+_Static_assert(sizeof(pattern_recovery_complete) == sizeof(mask_recovery_complete), "lobby pattern/mask length");
+_Static_assert(sizeof(pattern_recovery_rebuild) == sizeof(mask_recovery_rebuild), "rebuild pattern/mask length");
+_Static_assert(sizeof(pattern_recovery_timeout) == sizeof(mask_recovery_timeout), "timeout pattern/mask length");
+_Static_assert(sizeof(pattern_goodtrip_pack) == sizeof(mask_goodtrip_pack), "pack pattern/mask length");
+_Static_assert(sizeof(pattern_goodtrip_unpack) == sizeof(mask_goodtrip_unpack), "unpack pattern/mask length");
+_Static_assert(sizeof(pattern_goodtrip_script) == sizeof(mask_goodtrip_script), "script pattern/mask length");
+_Static_assert(sizeof(pattern_modsync_start1) == sizeof(mask_modsync_start1), "start1 pattern/mask length");
+_Static_assert(sizeof(pattern_modsync_start2) == sizeof(mask_modsync_start2), "start2 pattern/mask length");
+_Static_assert(sizeof(pattern_modsync_send_input) == sizeof(mask_modsync_send_input), "input pattern/mask length");
+_Static_assert(sizeof(pattern_characters_lobby) == sizeof(mask_characters_lobby), "char-lobby pattern/mask length");
+_Static_assert(sizeof(pattern_characters_toggle) == sizeof(mask_characters_toggle), "char-toggle pattern/mask length");
+_Static_assert(sizeof(pattern_characters_tainted) == sizeof(mask_characters_tainted), "char-tainted pattern/mask length");
+_Static_assert(sizeof(pattern_friends_dialog_push) == sizeof(mask_friends_dialog_push), "push pattern/mask length");
 
 static struct SiteEntry sites[BM_SITE_COUNT] = {
-    ENTRY(pattern_recovery_complete),
-    ENTRY(pattern_recovery_rebuild),
-    ENTRY(pattern_recovery_timeout),
-    ENTRY(pattern_goodtrip_pack),
-    ENTRY(pattern_goodtrip_unpack),
-    ENTRY(pattern_goodtrip_script),
-    ENTRY(pattern_modsync_start1),
-    ENTRY(pattern_modsync_start2),
-    ENTRY(pattern_modsync_send_input),
-    ENTRY(pattern_characters_lobby),
-    ENTRY(pattern_characters_toggle),
-    ENTRY(pattern_characters_tainted),
-    ENTRY(pattern_friends_dialog_push)
+    ENTRY(pattern_recovery_complete, mask_recovery_complete),
+    ENTRY(pattern_recovery_rebuild, mask_recovery_rebuild),
+    ENTRY(pattern_recovery_timeout, mask_recovery_timeout),
+    ENTRY(pattern_goodtrip_pack, mask_goodtrip_pack),
+    ENTRY(pattern_goodtrip_unpack, mask_goodtrip_unpack),
+    ENTRY(pattern_goodtrip_script, mask_goodtrip_script),
+    ENTRY(pattern_modsync_start1, mask_modsync_start1),
+    ENTRY(pattern_modsync_start2, mask_modsync_start2),
+    ENTRY(pattern_modsync_send_input, mask_modsync_send_input),
+    ENTRY(pattern_characters_lobby, mask_characters_lobby),
+    ENTRY(pattern_characters_toggle, mask_characters_toggle),
+    ENTRY(pattern_characters_tainted, mask_characters_tainted),
+    ENTRY(pattern_friends_dialog_push, mask_friends_dialog_push)
 };
 
 static uint32_t scan_section(const uint8_t *base, size_t size,
@@ -191,6 +205,7 @@ static uint32_t scan_section(const uint8_t *base, size_t size,
 }
 
 static const uint8_t *text_base;
+static uint32_t text_va;
 static size_t text_size;
 
 static bool find_text_section(void)
@@ -210,29 +225,43 @@ static bool find_text_section(void)
         if (memcmp(section[i].Name, ".text", sizeof(".text") - 1) == 0) {
             text_base = image + section[i].VirtualAddress;
             text_size = section[i].Misc.VirtualSize;
+            text_va = section[i].VirtualAddress;
             return true;
         }
     }
     return false;
 }
 
+static bool attempted, ready;
+static int failed_site = -1;
+
+int bm_locate_failure(void)
+{
+    return failed_site;
+}
+
 bool bm_locate_all(void)
 {
-    static bool attempted, ready;
     if (attempted)
         return ready;
     attempted = true;
     ready = false;
 
-    if (!find_text_section())
+    if (!find_text_section()) {
+        failed_site = -2; /* section lookup failed */
         return false;
+    }
 
     for (unsigned i = 0; i < BM_SITE_COUNT; ++i) {
         const uint32_t offset = scan_section(text_base, text_size,
                                              sites[i].bytes, sites[i].mask, sites[i].length);
-        if (!offset)
+        if (!offset) {
+            failed_site = (int)i;
             return false;
-        sites[i].resolved = offset;
+        }
+        /* Store the RVA (section offset plus the .text virtual address)
+         * so callers can use the value directly as an image offset. */
+        sites[i].resolved = offset + text_va;
     }
     ready = true;
     return true;

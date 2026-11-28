@@ -264,9 +264,10 @@ bool bm_characters_install(void)
     static const uint8_t toggle[] = { 0x8d, 0x04, 0x52, 0x8d, 0x0c, 0xc5 };
     static const uint8_t cycle[] = { 0x8a, 0x7f, 0x08, 0x33, 0xf6, 0x80, 0x7f, 0x09, 0x00, 0xb9, 0x12, 0, 0, 0 };
     static const uint8_t resume[] = { 0x81, 0x7d, 0xf8, 0xe9, 0x03, 0x00, 0x00 };
-    unsigned lobby_check = LOBBY_CHECK, toggle_check = TOGGLE_CHECK, cycle = CYCLE,
-             cycle_done = CYCLE_DONE, stock_check = STOCK_CHECK,
-             check_achievement = CHECK_ACHIEVEMENT, stock_tainted = STOCK_TAINTED;
+    unsigned lobby_check = LOBBY_CHECK, toggle_check = TOGGLE_CHECK,
+             cycle_site = CYCLE, cycle_done = CYCLE_DONE,
+             stock_check_rva = STOCK_CHECK, check_achievement_rva = CHECK_ACHIEVEMENT,
+             stock_tainted_rva = STOCK_TAINTED;
     /* Prefer pattern resolution so locally patched images beyond the two
      * known builds keep working; the per-build offsets remain the fallback.
      * The toggle pattern begins nine bytes before the site start and the
@@ -279,13 +280,13 @@ bool bm_characters_install(void)
         if (located_lobby && located_toggle && located_tainted) {
             int32_t distance;
             memcpy(&distance, image + located_lobby + 1, sizeof(distance));
-            stock_check = (uint32_t)((int64_t)located_lobby + 5 + distance);
-            const uint32_t toggle_e8 = located_toggle + 20;
+            stock_check_rva = (uint32_t)((int64_t)located_lobby + 5 + distance);
+            const uint32_t toggle_e8 = located_toggle + 19;
             memcpy(&distance, image + toggle_e8 + 1, sizeof(distance));
-            check_achievement = (uint32_t)((int64_t)toggle_e8 + 5 + distance);
+            check_achievement_rva = (uint32_t)((int64_t)toggle_e8 + 5 + distance);
             const uint32_t tainted_e8 = located_tainted + 6;
             memcpy(&distance, image + tainted_e8 + 1, sizeof(distance));
-            stock_tainted = (uint32_t)((int64_t)tainted_e8 + 5 + distance);
+            stock_tainted_rva = (uint32_t)((int64_t)tainted_e8 + 5 + distance);
             /* The three remaining calls keep their relative distance
              * from the first on every known build. */
             tainted_calls[0] = tainted_e8;
@@ -294,29 +295,29 @@ bool bm_characters_install(void)
             tainted_calls[3] = tainted_e8 + 0x21b9;
             lobby_check = located_lobby;
             toggle_check = located_toggle + 9;
-            cycle = toggle_check + (CYCLE - TOGGLE_CHECK);
-            cycle_done = cycle + (CYCLE_DONE - CYCLE);
+            cycle_site = toggle_check + (CYCLE - TOGGLE_CHECK);
+            cycle_done = cycle_site + (CYCLE_DONE - CYCLE);
         }
     }
     if (pe->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR32_MAGIC ||
         pe->OptionalHeader.SizeOfImage < CUSTOM_PAIRS + 8 ||
-        !matches_call(image, lobby_check, stock_check) ||
-        !matches_call(image, toggle_check + 10, check_achievement) ||
+        !matches_call(image, lobby_check, stock_check_rva) ||
+        !matches_call(image, toggle_check + 10, check_achievement_rva) ||
         memcmp(image + toggle_check, toggle, sizeof(toggle)) ||
-        memcmp(image + cycle, cycle, sizeof(cycle)) ||
+        memcmp(image + cycle_site, cycle, sizeof(cycle)) ||
         memcmp(image + cycle_done, resume, sizeof(resume)))
         return false;
     for (unsigned i = 0; i < sizeof(tainted_calls) / sizeof(tainted_calls[0]); ++i)
-        if (!matches_call(image, tainted_calls[i], stock_tainted))
+        if (!matches_call(image, tainted_calls[i], stock_tainted_rva))
             return false;
 
     const size_t length = cycle_done - lobby_check;
     DWORD access, discarded;
     if (!VirtualProtect(image + lobby_check, length, PAGE_EXECUTE_READWRITE, &access))
         return false;
-    stock_check = (void *)(image + stock_check);
-    stock_tainted = (void *)(image + stock_tainted);
-    achievement_unlocked = (void *)(image + check_achievement);
+    stock_check = (void *)(image + stock_check_rva);
+    stock_tainted = (void *)(image + stock_tainted_rva);
+    achievement_unlocked = (void *)(image + check_achievement_rva);
     append_pair = (void *)(image + APPEND_PAIR);
     image_base = image;
     write_branch(image + lobby_check, 0xe8, (uintptr_t)lobby_unlocked);
@@ -331,14 +332,14 @@ bool bm_characters_install(void)
 
     /* Preserve the original and selected slots in BH and BL for the lobby response. */
     const uint8_t cycle_args[] = { 0x8a, 0x7f, 0x08, 0x0f, 0xbe, 0xd0, 0x8b, 0xcf };
-    site = image + cycle;
+    site = image + cycle_site;
     memcpy(site, cycle_args, sizeof(cycle_args));
     write_branch(site + 8, 0xe8, (uintptr_t)cycle_character);
     site[13] = 0x8a;
     site[14] = 0xd8;
     write_branch(site + 15, 0xe9, (uintptr_t)(image + cycle_done));
     FlushInstructionCache(GetCurrentProcess(), image + lobby_check, length);
-    VirtualProtect(image + LOBBY_CHECK, length, access, &discarded);
+    VirtualProtect(image + lobby_check, length, access, &discarded);
 
     stock_type_to_slot = (void *)(image + STOCK_TYPE_TO_SLOT);
     const unsigned type_to_slot_calls[] = {

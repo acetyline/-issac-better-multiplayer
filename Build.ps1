@@ -22,7 +22,7 @@ $source = Join-Path $PSScriptRoot 'transport'
 $destination = Join-Path $output 'transport'
 [void][IO.Directory]::CreateDirectory($destination)
 $dll = Join-Path $destination 'bm_steam.dll'
-$sources = 'bm_transport.c', 'bm_friends.c', 'bm_characters.c', 'bm_goodtrip.c', 'bm_modsync.c', 'bm_recovery.c', 'bm_room_recovery.c', 'bm_speed.c', 'bm_locate.c', 'bm_transport.def' |
+$sources = 'bm_transport.c', 'bm_friends.c', 'bm_characters.c', 'bm_goodtrip.c', 'bm_modsync.c', 'bm_settings.c', 'bm_sync_popup.c', 'bm_recovery.c', 'bm_room_recovery.c', 'bm_speed.c', 'bm_locate.c', 'bm_transport.def' |
     ForEach-Object { Join-Path $source $_ }
 & $ZigPath cc -target x86-windows-gnu -std=gnu23 -shared -O2 -s -Wall -Wextra -Werror @sources -o $dll
 if ($LASTEXITCODE -ne 0) { throw "传输组件构建失败，返回码 $LASTEXITCODE。" }

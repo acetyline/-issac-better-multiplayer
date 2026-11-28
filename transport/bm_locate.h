@@ -43,4 +43,9 @@ enum bm_site {
 
 uint32_t bm_locate_site(enum bm_site site);
 
+/* Diagnostic: returns the index of the site that failed to resolve,
+ * -1 when nothing has been attempted yet, or -2 when the .text
+ * section itself could not be located. */
+int bm_locate_failure(void);
+
 #endif

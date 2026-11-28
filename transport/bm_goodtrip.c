@@ -568,20 +568,14 @@ static int __cdecl run_script(Lua *state, int args, int results, int err, intptr
     return result;
 }
 
-static bool calls_action(const uint8_t *image, unsigned site)
+/* Check that a call site is an E8 targeting the native action handler.
+ * The target is supplied explicitly so a pattern-resolved site whose
+ * handler was derived from the call itself can be validated too. */
+static bool calls_action(const uint8_t *image, unsigned site, unsigned native_target)
 {
     int32_t distance;
     memcpy(&distance, image + site + 1, sizeof(distance));
-    return image[site] == 0xe8 && distance == (int32_t)(NATIVE_ACTION - site - 5);
-}
-
-/* Same check with an explicitly supplied target, used when the native
- * action handler was derived from a pattern-resolved call site. */
-static bool calls_action_target(const uint8_t *image, unsigned site, unsigned target)
-{
-    int32_t distance;
-    memcpy(&distance, image + site + 1, sizeof(distance));
-    return image[site] == 0xe8 && distance == (int32_t)(target - site - 5);
+    return image[site] == 0xe8 && distance == (int32_t)(native_target - site - 5);
 }
 
 static bool load_lua_api(void)
@@ -635,8 +629,8 @@ bool bm_goodtrip_install(int (*room_role)(void), uint64_t (*room_owner)(void), v
 
     if (pe->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR32_MAGIC ||
         pe->OptionalHeader.SizeOfImage < NET_STATE + sizeof(void *) ||
-        !calls_action_target(image, pack_action_site, native_action) ||
-        !calls_action_target(image, unpack_action_site, NATIVE_ACTION) ||
+        !calls_action(image, pack_action_site, native_action) ||
+        !calls_action(image, unpack_action_site, native_action) ||
         memcmp(image + BM_GAME_RVA(0x50ea35, 0x50ef25), "\x0f\xb6\x46\x0f", 4) || // Serialize the whole control byte.
         memcmp(image + BM_GAME_RVA(0x50eb55, 0x50f045), "\x88\x47\x0f", 3) ||     // Deserialize the whole control byte.
         memcmp(image + BM_GAME_RVA(0x523622, 0x523b32), "\xf6\x41\x0f\x02", 4) || // Read native control bit 1.
