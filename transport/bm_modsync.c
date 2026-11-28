@@ -2,6 +2,7 @@
 #include "bm_game_build.h"
 #include "bm_goodtrip.h"
 #include "bm_modsync.h"
+#include "bm_locate.h"
 #include "bm_settings.h"
 #include "bm_sync_popup.h"
 
@@ -94,26 +95,49 @@ static bool install_start_gate(void)
     uint8_t *image = (uint8_t *)GetModuleHandleW(NULL);
     const IMAGE_DOS_HEADER *dos = (const IMAGE_DOS_HEADER *)image;
     const IMAGE_NT_HEADERS32 *pe = (const IMAGE_NT_HEADERS32 *)(image + dos->e_lfanew);
+
+    /* Prefer pattern resolution so locally patched images beyond the two
+     * known builds keep working; the per-build offsets remain the fallback.
+     * The start1 pattern begins at "mov ecx,esi" (8b ce) with the call
+     * opcode two bytes in; send_input begins at the E8 itself. */
+    uint32_t start1 = START1, start2 = START2, input_call = SEND_INPUT_CALL;
+    uint32_t start_native = START_NATIVE, input_native = SEND_INPUT_NATIVE;
+    if (bm_locate_all()) {
+        const uint32_t s1 = bm_locate_site(BM_SITE_MODSYNC_START1);
+        const uint32_t s2 = bm_locate_site(BM_SITE_MODSYNC_START2);
+        const uint32_t si = bm_locate_site(BM_SITE_MODSYNC_SEND_INPUT);
+        if (s1 && s2 && si) {
+            start1 = s1 + 2;
+            start2 = s2;
+            input_call = si;
+            int32_t distance;
+            memcpy(&distance, image + start1 + 1, sizeof(distance));
+            start_native = (uint32_t)((int64_t)start1 + 5 + distance);
+            memcpy(&distance, image + si + 1, sizeof(distance));
+            input_native = (uint32_t)((int64_t)si + 5 + distance);
+        }
+    }
+
     if (pe->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR32_MAGIC ||
-        pe->OptionalHeader.SizeOfImage < SEND_INPUT_NATIVE + 5 ||
-        !call_matches(image, START1, START_NATIVE) ||
-        !call_matches(image, START2, START_NATIVE) ||
-        !call_matches(image, SEND_INPUT_CALL, SEND_INPUT_NATIVE))
+        pe->OptionalHeader.SizeOfImage < input_native + 5 ||
+        !call_matches(image, start1, start_native) ||
+        !call_matches(image, start2, start_native) ||
+        !call_matches(image, input_call, input_native))
         return false;
     DWORD start_access, input_access, discarded;
-    uint8_t *start = image + START1;
-    uint8_t *input = image + SEND_INPUT_CALL;
-    const size_t length = START2 - START1 + 5;
+    uint8_t *start = image + start1;
+    uint8_t *input = image + input_call;
+    const size_t length = start2 - start1 + 5;
     if (!VirtualProtect(start, length, PAGE_EXECUTE_READWRITE, &start_access))
         return false;
     if (!VirtualProtect(input, 5, PAGE_EXECUTE_READWRITE, &input_access)) {
         VirtualProtect(start, length, start_access, &discarded);
         return false;
     }
-    native_start = (void (__thiscall *)(void *))(image + START_NATIVE);
-    native_send_input = (void (__thiscall *)(void *, uint32_t))(image + SEND_INPUT_NATIVE);
+    native_start = (void (__thiscall *)(void *))(image + start_native);
+    native_send_input = (void (__thiscall *)(void *, uint32_t))(image + input_native);
     redirect_call(start, (uintptr_t)start_if_synced);
-    redirect_call(image + START2, (uintptr_t)start_if_synced);
+    redirect_call(image + start2, (uintptr_t)start_if_synced);
     redirect_call(input, (uintptr_t)send_gameplay_input);
     FlushInstructionCache(GetCurrentProcess(), start, length);
     FlushInstructionCache(GetCurrentProcess(), input, 5);

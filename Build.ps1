@@ -22,7 +22,7 @@ $source = Join-Path $PSScriptRoot 'transport'
 $destination = Join-Path $output 'transport'
 [void][IO.Directory]::CreateDirectory($destination)
 $dll = Join-Path $destination 'bm_steam.dll'
-$sources = 'bm_transport.c', 'bm_friends.c', 'bm_characters.c', 'bm_goodtrip.c', 'bm_modsync.c', 'bm_settings.c', 'bm_sync_popup.c', 'bm_recovery.c', 'bm_room_recovery.c', 'bm_speed.c', 'bm_transport.def' |
+$sources = 'bm_transport.c', 'bm_friends.c', 'bm_characters.c', 'bm_goodtrip.c', 'bm_modsync.c', 'bm_settings.c', 'bm_sync_popup.c', 'bm_recovery.c', 'bm_room_recovery.c', 'bm_speed.c', 'bm_locate.c', 'bm_transport.def' |
     ForEach-Object { Join-Path $source $_ }
 & $ZigPath cc -target x86-windows-gnu -std=gnu23 -shared -O2 -s -Wall -Wextra -Werror @sources -o $dll
 if ($LASTEXITCODE -ne 0) { throw "传输组件构建失败，返回码 $LASTEXITCODE。" }
@@ -51,13 +51,13 @@ if ($GameDirectory) {
 }
 
 $archiveName = if ($FriendsOnly) {
-    'BetterMultiplayer-0.4.0-Friends-Mods.zip'
+    'BetterMultiplayer-0.3.0-preview-J511-Friends-Mods.zip'
 } else {
-    'BetterMultiplayer-0.4.0.zip'
+    'BetterMultiplayer-0.3.0-preview.zip'
 }
 $archive = Join-Path (Split-Path -Parent $output) $archiveName
 $temporary = "$archive.$([guid]::NewGuid().ToString('N'))"
-Add-Type -AssemblyName System.IO.Compression.FileSystem
+Add-Type -AssemblyName System.IO.Compression.FileSystem, System.IO.Compression
 try {
     $zip = [IO.Compression.ZipFile]::Open($temporary, [IO.Compression.ZipArchiveMode]::Create)
     try {

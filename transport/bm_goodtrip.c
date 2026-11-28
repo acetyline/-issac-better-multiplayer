@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include "bm_goodtrip.h"
+#include "bm_locate.h"
 
 #define PACK_ACTION BM_GAME_RVA(0x50ebf2, 0x50f0e2)
 #define UNPACK_ACTION BM_GAME_RVA(0x523563, 0x523a73)
@@ -567,11 +568,14 @@ static int __cdecl run_script(Lua *state, int args, int results, int err, intptr
     return result;
 }
 
-static bool calls_action(const uint8_t *image, unsigned site)
+/* Check that a call site is an E8 targeting the native action handler.
+ * The target is supplied explicitly so a pattern-resolved site whose
+ * handler was derived from the call itself can be validated too. */
+static bool calls_action(const uint8_t *image, unsigned site, unsigned native_target)
 {
     int32_t distance;
     memcpy(&distance, image + site + 1, sizeof(distance));
-    return image[site] == 0xe8 && distance == (int32_t)(NATIVE_ACTION - site - 5);
+    return image[site] == 0xe8 && distance == (int32_t)(native_target - site - 5);
 }
 
 static bool load_lua_api(void)
@@ -601,9 +605,32 @@ bool bm_goodtrip_install(int (*room_role)(void), uint64_t (*room_owner)(void), v
     uint8_t *image = (uint8_t *)GetModuleHandleW(NULL);
     const IMAGE_DOS_HEADER *dos = (const IMAGE_DOS_HEADER *)image;
     const IMAGE_NT_HEADERS32 *pe = (const IMAGE_NT_HEADERS32 *)(image + dos->e_lfanew);
+    /* Prefer pattern resolution so locally patched images beyond the two
+     * known builds keep working; the per-build offsets remain the fallback.
+     * The pack/unpack/script patterns resolve the three install sites and
+     * the native action target is derived from the pack call itself. */
+    unsigned pack_action_site = PACK_ACTION, unpack_action_site = UNPACK_ACTION,
+             script_call_site = SCRIPT_CALL, native_action = NATIVE_ACTION;
+    bool patterned = false;
+    if (bm_locate_all()) {
+        const uint32_t p = bm_locate_site(BM_SITE_GOODTRIP_PACK);
+        const uint32_t u = bm_locate_site(BM_SITE_GOODTRIP_UNPACK);
+        const uint32_t s = bm_locate_site(BM_SITE_GOODTRIP_SCRIPT);
+        if (p && u && s) {
+            pack_action_site = p;
+            unpack_action_site = u;
+            script_call_site = s;
+            int32_t distance;
+            memcpy(&distance, image + p + 1, sizeof(distance));
+            native_action = (uint32_t)((int64_t)p + 5 + distance);
+            patterned = true;
+        }
+    }
+
     if (pe->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR32_MAGIC ||
         pe->OptionalHeader.SizeOfImage < NET_STATE + sizeof(void *) ||
-        !calls_action(image, PACK_ACTION) || !calls_action(image, UNPACK_ACTION) ||
+        !calls_action(image, pack_action_site, native_action) ||
+        !calls_action(image, unpack_action_site, native_action) ||
         memcmp(image + BM_GAME_RVA(0x50ea35, 0x50ef25), "\x0f\xb6\x46\x0f", 4) || // Serialize the whole control byte.
         memcmp(image + BM_GAME_RVA(0x50eb55, 0x50f045), "\x88\x47\x0f", 3) ||     // Deserialize the whole control byte.
         memcmp(image + BM_GAME_RVA(0x523622, 0x523b32), "\xf6\x41\x0f\x02", 4) || // Read native control bit 1.
@@ -611,10 +638,16 @@ bool bm_goodtrip_install(int (*room_role)(void), uint64_t (*room_owner)(void), v
         memcmp(image + BM_GAME_RVA(0x523694, 0x523ba4), "\x83\xe0\x01", 3))      // Read native control bit 0.
         return false;
 
-    uint8_t *pcall = image + SCRIPT_CALL;
+    uint8_t *pcall = image + script_call_site;
+    if (pe->OptionalHeader.SizeOfImage < script_call_site + 8)
+        return false;
     uintptr_t import;
     memcpy(&import, pcall + 2, sizeof(import));
-    if (pcall[0] != 0xff || pcall[1] != 0x15 || import != (uintptr_t)(image + LUA_PCALL_IMPORT))
+    /* On a pattern-resolved site the import table moves with the image, so
+     * require the slot to point inside this image instead of one fixed RVA. */
+    if (pcall[0] != 0xff || pcall[1] != 0x15 ||
+        (patterned ? (import < (uintptr_t)image || import >= (uintptr_t)(image + pe->OptionalHeader.SizeOfImage))
+                   : import != (uintptr_t)(image + LUA_PCALL_IMPORT)))
         return false;
 
     uint8_t *sites[] = { image + PACK_ACTION, image + UNPACK_ACTION, pcall };
